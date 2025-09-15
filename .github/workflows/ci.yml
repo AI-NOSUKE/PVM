@@ -7,7 +7,9 @@ on:
     branches: [ "main" ]
   workflow_dispatch: {}
   schedule:
-    - cron: "0 18 * * 0"  # 週1（日曜UTC18:00=月曜朝JST）
+
+    - cron: "0 18 * * 0"  # 毎週月曜朝に自動実行（JST）
+
 
 jobs:
   smoke:
