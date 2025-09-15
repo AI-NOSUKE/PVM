@@ -1,0 +1,29 @@
+# Python artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+*.env
+.env
+
+# Notebooks and reports
+.ipynb_checkpoints/
+*.ipynb
+
+# OS/editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Build and cache
+build/
+dist/
+*.log
+
+# Large binaries
+*.bin
+*.pt
+*.onnx
+PVMresult/
