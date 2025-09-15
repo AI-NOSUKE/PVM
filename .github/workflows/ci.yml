@@ -5,31 +5,86 @@ on:
     branches: [ "main" ]
   pull_request:
     branches: [ "main" ]
-
-permissions:
-  contents: read
+  workflow_dispatch: {}
+  schedule:
+    - cron: "0 18 * * 0"  # 毎週月曜朝に自動実行（JST）
 
 jobs:
-  build:
+  smoke:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
+      - uses: actions/checkout@v4
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
-
+          python-version: "3.11"
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-${{ runner.os }}-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: |
+            pip-${{ runner.os }}-
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-          pip install flake8
+          pip install -r requirements.txt
+      - name: CLI help should work
+        run: python PVM.py --help
 
-      - name: Lint
-        run: flake8 .
-
-      - name: Smoke test (help screen only)
+  sample-run:
+    needs: smoke
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-${{ runner.os }}-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: |
+            pip-${{ runner.os }}-
+      - name: Cache HuggingFace models
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-${{ runner.os }}-ruri-v3-310m
+          restore-keys: |
+            hf-${{ runner.os }}-
+      - name: Install dependencies
         run: |
-          python PVM.py --help > /dev/null
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Prepare tiny CSV (3 rows)
+        run: |
+          mkdir -p examples
+          cat > examples/ci_sample.csv << 'EOF'
+          text
+          これはテストです
+          次の行です
+          マーケティングの文章です
+          EOF
+      - name: Run PVM on tiny data (candidate only)
+        env:
+          HF_HOME: ~/.cache/huggingface
+        run: |
+          python PVM.py --input_csv examples/ci_sample.csv --text_col text \
+            --show-candidates --k_min 2 --k_max 2 --pca_var 0.8 --batch 1 --log_level INFO
+      - name: Check outputs exist
+        run: |
+          test -f PVMresult/run_1回目_01/k_candidates.csv
+          test -f PVMresult/run_1回目_01/k_candidates_stage2.csv
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: pvm-ci-outputs
+          path: |
+            PVMresult/run_1回目_01/k_candidates.csv
+            PVMresult/run_1回目_01/k_candidates_stage2.csv
