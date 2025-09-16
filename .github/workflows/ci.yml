@@ -16,9 +16,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 90
     env:
+      # ワークスペース配下にキャッシュ（常に安全なコンテキスト）
       HF_HOME: ${{ github.workspace }}/.hf_cache
       PIP_CACHE_DIR: ${{ github.workspace }}/.pip_cache
-      HF_HUB_ENABLE_HF_TRANSFER: "1"
+      # 安定運用のため高速DLは無効化（必要なら "1" にして、pip で hf_transfer を入れてね）
+      HF_HUB_ENABLE_HF_TRANSFER: "0"
       PIP_NO_INPUT: "1"
 
     steps:
@@ -52,6 +54,7 @@ jobs:
           set -euxo pipefail
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          # パッケージ化未対応でもCIが落ちないよう保険（厳格にするなら || true を削除）
           pip install . || true
           mkdir -p logs
 
@@ -67,6 +70,8 @@ jobs:
           test -f examples/sample_texts.csv
           echo "--- show help ---"
           python PVM.py -h | sed -n '1,200p'
+          echo "HF_HOME=$HF_HOME"
+          echo "PIP_CACHE_DIR=$PIP_CACHE_DIR"
 
       - name: Show environment
         shell: bash
@@ -74,8 +79,6 @@ jobs:
           set -euxo pipefail
           python --version
           pip list | sed -n '1,120p'
-          echo "HF_HOME=$HF_HOME"
-          echo "PIP_CACHE_DIR=$PIP_CACHE_DIR"
           df -h || true
           free -h || true
 
@@ -106,11 +109,11 @@ jobs:
         run: |
           set -euxo pipefail
           { time run_with_retry python PVM.py --input_csv examples/sample_texts.csv --project run1; } 2>&1 | tee logs/flow1_normal.txt
-          # ロックは直前成果を基準として再実行（baseline-from は run1 を想定）
+          # 直前成果物を基準にロック（再実行）
           { time run_with_retry python PVM.py --input_csv examples/sample_texts.csv --project run1_lock --baseline-from run1; } 2>&1 | tee logs/flow1_lock.txt
           echo "ok" > logs/flow1.done
 
-      # ② 通常実行 → アンロック再実行（unlockフラグで再探索）
+      # ② 通常実行 → アンロック再実行
       - name: Flow 2 - normal then unlock
         shell: bash
         run: |
@@ -124,7 +127,7 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          # 候補表示（結果に plan*.json が出力される想定）
+          # 候補提示（candidates/ に plan*.json が出力される想定）
           { time run_with_retry python PVM.py --input_csv examples/sample_texts.csv --project candidates --show-candidates; } 2>&1 | tee logs/flow3_candidates.txt
           PLAN_JSON=$(ls -1 candidates/plan*.json 2>/dev/null | head -n1)
           if [ -z "$PLAN_JSON" ]; then echo "No plan JSON found under candidates/" >&2; exit 2; fi
