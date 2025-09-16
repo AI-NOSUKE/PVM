@@ -1,4 +1,4 @@
-﻿name: PVM CI (debug+hardened, workspace caches)
+﻿name: PVM CI (full debug, all major flows)
 
 on:
   push:
@@ -18,7 +18,7 @@ jobs:
     env:
       HF_HOME: ${{ github.workspace }}/.hf_cache
       PIP_CACHE_DIR: ${{ github.workspace }}/.pip_cache
-      HF_HUB_ENABLE_HF_TRANSFER: "0"   # 安定運用（必要なら 1 + pip install hf_transfer）
+      HF_HUB_ENABLE_HF_TRANSFER: "0"   # 安定優先
       PIP_NO_INPUT: "1"
       TOKENIZERS_PARALLELISM: "false"
 
@@ -53,9 +53,11 @@ jobs:
           set -euxo pipefail
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-          # ↓ 追加：ruri系トークナイザに必須
+          # 必須依存（トークナイザ等）
           pip install "sentencepiece>=0.1.99" "protobuf<5"
-          # パッケージ化未対応でもCIが落ちないよう保険（厳格にするなら || true を削除）
+          # modernBERT対応
+          pip install --upgrade "transformers>=4.41.0"
+          # PVM 自身
           pip install . || true
           mkdir -p logs
 
