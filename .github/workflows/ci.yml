@@ -1,4 +1,4 @@
-﻿name: PVM CI (debug+hardened)
+﻿name: PVM CI (debug+hardened, workspace caches)
 
 on:
   push:
@@ -14,13 +14,13 @@ concurrency:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 90  # 初回DLの余裕
+    timeout-minutes: 90
     env:
-      # ✅ runner.temp を正しく使用（旧 github.runner_temp は無効）
-      HF_HOME: ${{ runner.temp }}/.hf_cache
+      # ✅ runner.temp の代わりに github.workspace を利用（常に利用可）
+      HF_HOME: ${{ github.workspace }}/.hf_cache
+      PIP_CACHE_DIR: ${{ github.workspace }}/.pip_cache
       HF_HUB_ENABLE_HF_TRANSFER: "1"
       PIP_NO_INPUT: "1"
-      PIP_CACHE_DIR: ${{ runner.temp }}/.pip_cache
 
     steps:
       - name: Checkout
@@ -31,6 +31,12 @@ jobs:
         with:
           python-version: "3.11"
           cache: "pip"
+
+      - name: Prepare caches (dirs)
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p "${HF_HOME}" "${PIP_CACHE_DIR}"
 
       - name: Cache HF/Torch/PIP
         uses: actions/cache@v4
@@ -47,7 +53,7 @@ jobs:
           set -euxo pipefail
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-          # パッケージ化未対応でもCIが落ちないように保険（厳格化したければ || true を外す）
+          # パッケージ化未対応でもCIが落ちないよう保険（厳格化したければ || true を外す）
           pip install . || true
           mkdir -p logs
 
@@ -61,6 +67,8 @@ jobs:
           find . -maxdepth 2 -type f | sort | sed -n '1,200p'
           test -f PVM.py
           test -f examples/sample_texts.csv
+          echo "HF_HOME=$HF_HOME"
+          echo "PIP_CACHE_DIR=$PIP_CACHE_DIR"
 
       - name: Show environment
         shell: bash
@@ -68,9 +76,7 @@ jobs:
           set -euxo pipefail
           python --version
           pip list | sed -n '1,120p'
-          echo "HF_HOME=$HF_HOME"
-          echo "PIP_CACHE_DIR=$PIP_CACHE_DIR"
-          df -h
+          df -h || true
           free -h || true
 
       - name: Define retry helper
