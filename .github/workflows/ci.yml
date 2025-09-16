@@ -1,4 +1,4 @@
-name: PVM CI (final: all major flows)
+name: PVM CI (final all flows)
 
 on:
   push:
@@ -32,13 +32,13 @@ jobs:
           python-version: "3.11"
           cache: "pip"
 
-      - name: Prepare caches (dirs)
+      - name: Prepare caches
         shell: bash
         run: |
           set -euxo pipefail
           mkdir -p "${HF_HOME}" "${PIP_CACHE_DIR}"
 
-      - name: Cache HF/Torch/PIP
+      - name: Cache HF Torch and PIP
         uses: actions/cache@v4
         with:
           path: |
@@ -55,8 +55,6 @@ jobs:
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
           pip install "sentencepiece>=0.1.99" "protobuf<5"
           pip install --upgrade "transformers>=4.41.0"
-          # 高速DLしたい場合だけ
-          # pip install hf_transfer && echo "HF_HUB_ENABLE_HF_TRANSFER=1" >> $GITHUB_ENV
           pip install . || true
           mkdir -p logs
 
@@ -88,7 +86,6 @@ jobs:
           EOS
           chmod +x /usr/local/bin/run_with_retry
 
-      # ① 通常 → ロック
       - name: Flow 1 - normal then lock
         shell: bash
         run: |
@@ -97,7 +94,6 @@ jobs:
           { time run_with_retry python PVM.py --input_csv examples/sample_texts.csv --project run1_lock --baseline-from run1; } 2>&1 | tee logs/flow1_lock.txt
           echo "ok" > logs/flow1.done
 
-      # ② 通常 → アンロック（baseline-from 付けない）
       - name: Flow 2 - normal then unlock
         shell: bash
         run: |
@@ -106,7 +102,6 @@ jobs:
           { time run_with_retry python PVM.py --input_csv examples/sample_texts.csv --project run2_unlock --unlock; } 2>&1 | tee logs/flow2_unlock.txt
           echo "ok" > logs/flow2.done
 
-      # ③ candidates → plan → lock
       - name: Flow 3 - candidates -> plan -> lock
         shell: bash
         run: |
