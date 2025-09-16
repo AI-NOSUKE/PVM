@@ -7,18 +7,17 @@ on:
     branches: [ "main" ]
   workflow_dispatch: {}
   schedule:
-    - cron: "0 18 * * 0"  # 毎週月曜朝（JST）に自動実行
+    - cron: "0 18 * * 0"
 
 jobs:
   pvm-flow:
     runs-on: ubuntu-latest
     timeout-minutes: 90
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Python 3.11
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
@@ -31,7 +30,7 @@ jobs:
           restore-keys: |
             pip-${{ runner.os }}-
 
-      - name: Cache HuggingFace
+      - name: Cache HF
         uses: actions/cache@v4
         with:
           path: ~/.cache/huggingface
@@ -39,62 +38,43 @@ jobs:
           restore-keys: |
             hf-${{ runner.os }}-
 
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
+      - name: Install deps
+        run: python -m pip install --upgrade pip && pip install -r requirements.txt
 
-      - name: Sanity: list project files
-        run: |
-          ls -la
-          ls -la examples
+      - name: List files
+        run: ls -la && ls -la examples
 
-      # ① 初回（候補出し → Plan=3 採用で基準作成）
-      - name: Step 1a: 初回 候補出し
+      - name: Step 1a candidates
         env:
           HF_HOME: ~/.cache/huggingface
-        run: |
-          python PVM.py --input_csv examples/sample_texts.csv --text_col text \
-            --project ci1 --show-candidates --k_min 2 --k_max 5 --pca_var 0.8 --batch 2 --log_level INFO
+        run: python PVM.py --input_csv examples/sample_texts.csv --text_col text --project ci1 --show-candidates --k_min 2 --k_max 5 --pca_var 0.8 --batch 2 --log_level INFO
 
-      - name: Step 1b: Plan=3 を採用して基準作成
+      - name: Step 1b use-plan 3
         env:
           HF_HOME: ~/.cache/huggingface
-        run: |
-          python PVM.py --input_csv examples/sample_texts.csv --text_col text \
-            --project ci1 --use-plan 3
+        run: python PVM.py --input_csv examples/sample_texts.csv --text_col text --project ci1 --use-plan 3
 
-      # ② 2回目（クラスタロック：基準固定で再割当）
-      - name: Step 2: 2回目 クラスタロック
+      - name: Step 2 lock
         env:
           HF_HOME: ~/.cache/huggingface
-        run: |
-          python PVM.py --input_csv examples/sample_texts.csv --text_col text \
-            --project ci2 --baseline-from ci1
+        run: python PVM.py --input_csv examples/sample_texts.csv --text_col text --project ci2 --baseline-from ci1
 
-      # ③ 2回目（柔軟適用：新話題を吸収）
-      - name: Step 3: 2回目 柔軟適用（アンロック）
+      - name: Step 3 unlock
         env:
           HF_HOME: ~/.cache/huggingface
-        run: |
-          python PVM.py --input_csv examples/sample_texts.csv --text_col text \
-            --project ci3 --baseline-from ci1 --unlock --unlock-q 0.90 --unlock-add-k 2
+        run: python PVM.py --input_csv examples/sample_texts.csv --text_col text --project ci3 --baseline-from ci1 --unlock --unlock-q 0.90 --unlock-add-k 2
 
-      # 生成物の存在チェック（無ければ失敗）
-      - name: Check outputs exist
-        run: |
-          test -f "PVMresult/baseline_ci1/history/v001/manifest.json"
-          test -f "PVMresult/run_ci1_02/結果スコア.csv"
-          test -f "PVMresult/run_ci2_01/結果スコア.csv"
-          test -f "PVMresult/run_ci3_02/結果スコア.csv"
+      - name: Check outputs 1
+        run: test -f PVMresult/baseline_ci1/history/v001/manifest.json
+      - name: Check outputs 2
+        run: test -f PVMresult/run_ci1_02/結果スコア.csv
+      - name: Check outputs 3
+        run: test -f PVMresult/run_ci2_01/結果スコア.csv
+      - name: Check outputs 4
+        run: test -f PVMresult/run_ci3_02/結果スコア.csv
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: pvm-ci-full
-          path: |
-            PVMresult/run_ci1_01/**
-            PVMresult/run_ci1_02/**
-            PVMresult/run_ci2_01/**
-            PVMresult/run_ci3_02/**
-            PVMresult/baseline_ci1/**
+          path: PVMresult/**
