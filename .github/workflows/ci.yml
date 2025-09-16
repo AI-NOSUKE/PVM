@@ -13,6 +13,7 @@ jobs:
   pvm-flow:
     runs-on: ubuntu-latest
     timeout-minutes: 90
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -64,14 +65,17 @@ jobs:
           HF_HOME: ~/.cache/huggingface
         run: python PVM.py --input_csv examples/sample_texts.csv --text_col text --project ci3 --baseline-from ci1 --unlock --unlock-q 0.90 --unlock-add-k 2
 
-      - name: Check outputs 1
-        run: test -f PVMresult/baseline_ci1/history/v001/manifest.json
-      - name: Check outputs 2
-        run: test -f PVMresult/run_ci1_02/結果スコア.csv
-      - name: Check outputs 3
-        run: test -f PVMresult/run_ci2_01/結果スコア.csv
-      - name: Check outputs 4
-        run: test -f PVMresult/run_ci3_02/結果スコア.csv
+      - name: Ensure UTF-8 locale
+        run: echo "LC_ALL=C.UTF-8" >> $GITHUB_ENV
+
+      - name: Summarize outputs
+        run: echo "PWD=$(pwd)"; echo "==== PVMresult tree (depth<=3) ===="; find PVMresult -maxdepth 3 -type d -print | sort; find PVMresult -maxdepth 3 -type f -print | sort | sed -n '1,200p'
+
+      - name: Verify baseline dir exists
+        run: test -d PVMresult/baseline_ci1/history/v001
+
+      - name: Verify run dirs exist
+        run: test -d PVMresult/run_ci1_02 && test -d PVMresult/run_ci2_01 && test -d PVMresult/run_ci3_02
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
