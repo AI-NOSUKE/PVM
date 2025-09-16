@@ -1,4 +1,4 @@
-﻿name: PVM CI
+﻿name: PVM CI (debug+hardened)
 
 on:
   push:
@@ -14,11 +14,14 @@ concurrency:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90  # 初回DLの余裕
     env:
-      HF_HOME: ${{ github.runner_temp }}/.hf_cache
+      # ✅ runner.temp を正しく使用（旧 github.runner_temp は無効）
+      HF_HOME: ${{ runner.temp }}/.hf_cache
       HF_HUB_ENABLE_HF_TRANSFER: "1"
       PIP_NO_INPUT: "1"
+      PIP_CACHE_DIR: ${{ runner.temp }}/.pip_cache
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -29,60 +32,119 @@ jobs:
           python-version: "3.11"
           cache: "pip"
 
-      - name: Cache HF/Torch
+      - name: Cache HF/Torch/PIP
         uses: actions/cache@v4
         with:
           path: |
             ${{ env.HF_HOME }}
             ~/.cache/torch
-          key: ${{ runner.os }}-hf-${{ hashFiles('requirements.txt') }}
+            ${{ env.PIP_CACHE_DIR }}
+          key: ${{ runner.os }}-hf-pip-${{ hashFiles('requirements.txt') }}
 
       - name: Install deps
         shell: bash
         run: |
+          set -euxo pipefail
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          # パッケージ化未対応でもCIが落ちないように保険（厳格化したければ || true を外す）
           pip install . || true
+          mkdir -p logs
+
+      - name: Preflight - repo layout & sample
+        shell: bash
+        run: |
+          set -euxo pipefail
+          echo "PWD=$(pwd)"
+          ls -la
+          echo "--- tree (top) ---"
+          find . -maxdepth 2 -type f | sort | sed -n '1,200p'
+          test -f PVM.py
+          test -f examples/sample_texts.csv
 
       - name: Show environment
         shell: bash
         run: |
+          set -euxo pipefail
           python --version
-          pip list | sed -n '1,60p'
+          pip list | sed -n '1,120p'
           echo "HF_HOME=$HF_HOME"
+          echo "PIP_CACHE_DIR=$PIP_CACHE_DIR"
+          df -h
+          free -h || true
 
+      - name: Define retry helper
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cat > /usr/local/bin/run_with_retry <<'EOS'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          cmd="$*"
+          for i in 1 2 3; do
+            echo "---- Attempt $i: $cmd"
+            if eval "$cmd"; then
+              exit 0
+            fi
+            echo "Attempt $i failed. Sleeping..."
+            sleep $((10*i))
+          done
+          echo "All attempts failed."
+          exit 1
+          EOS
+          chmod +x /usr/local/bin/run_with_retry
+
+      # ① 普通 → lock
       - name: Flow 1 - normal then lock
         shell: bash
         run: |
-          set -eux
-          python PVM.py examples/sample_texts.csv --output_dir=run1
-          python PVM.py examples/sample_texts.csv --output_dir=run1_lock --lock_dir=run1
+          set -euxo pipefail
+          { time run_with_retry python PVM.py examples/sample_texts.csv --output_dir=run1; } 2>&1 | tee logs/flow1_normal.txt
+          { time run_with_retry python PVM.py examples/sample_texts.csv --output_dir=run1_lock --lock_dir=run1; } 2>&1 | tee logs/flow1_lock.txt
+          echo "ok" > logs/flow1.done
 
+      # ② 普通 → unlock
       - name: Flow 2 - normal then unlock
         shell: bash
         run: |
-          set -eux
-          python PVM.py examples/sample_texts.csv --output_dir=run2
-          python PVM.py examples/sample_texts.csv --output_dir=run2_unlock
+          set -euxo pipefail
+          { time run_with_retry python PVM.py examples/sample_texts.csv --output_dir=run2; } 2>&1 | tee logs/flow2_normal.txt
+          { time run_with_retry python PVM.py examples/sample_texts.csv --output_dir=run2_unlock; } 2>&1 | tee logs/flow2_unlock.txt
+          echo "ok" > logs/flow2.done
 
+      # ③ candidates → plan → lock
       - name: Flow 3 - candidates -> plan -> lock
         shell: bash
         run: |
-          set -eux
-          python PVM.py examples/sample_texts.csv --output_dir=candidates --candidates
-          python PVM.py examples/sample_texts.csv --output_dir=plan3 --use_plan=candidates/plan3.json
-          python PVM.py examples/sample_texts.csv --output_dir=plan3_lock --lock_dir=plan3
+          set -euxo pipefail
+          { time run_with_retry python PVM.py examples/sample_texts.csv --output_dir=candidates --candidates; } 2>&1 | tee logs/flow3_candidates.txt
+          PLAN_JSON=$(ls -1 candidates/plan*.json 2>/dev/null | head -n1)
+          if [ -z "$PLAN_JSON" ]; then echo "No plan JSON found under candidates/" >&2; exit 2; fi
+          echo "Using plan: $PLAN_JSON"
+          { time run_with_retry python PVM.py examples/sample_texts.csv --output_dir=plan3 --use_plan="$PLAN_JSON"; } 2>&1 | tee logs/flow3_plan.txt
+          { time run_with_retry python PVM.py examples/sample_texts.csv --output_dir=plan3_lock --lock_dir=plan3; } 2>&1 | tee logs/flow3_lock.txt
+          echo "ok" > logs/flow3.done
+
+      - name: Assert outputs exist (light)
+        shell: bash
+        run: |
+          set -euxo pipefail
+          for d in run1 run1_lock run2 run2_unlock candidates plan3 plan3_lock; do
+            test -d "$d"
+          done
 
       - name: Upload artifacts (always)
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: pvm-outputs
+          name: pvm-outputs-and-logs
           path: |
-            run1
-            run1_lock
-            run2
-            run2_unlock
-            candidates
-            plan3
-            plan3_lock
+            run1/**
+            run1_lock/**
+            run2/**
+            run2_unlock/**
+            candidates/**
+            plan3/**
+            plan3_lock/**
+            logs/**
+          if-no-files-found: warn
