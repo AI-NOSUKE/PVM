@@ -13,10 +13,12 @@ jobs:
   pvm-flow:
     runs-on: ubuntu-latest
     timeout-minutes: 90
-    steps:
-      - uses: actions/checkout@v4
 
-      - name: Set up Python
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
@@ -29,7 +31,7 @@ jobs:
           restore-keys: |
             pip-${{ runner.os }}-
 
-      - name: Cache HuggingFace models
+      - name: Cache HuggingFace
         uses: actions/cache@v4
         with:
           path: ~/.cache/huggingface
@@ -42,44 +44,47 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Sanity: list files
+      - name: Sanity: list project files
         run: |
           ls -la
           ls -la examples
 
       # ① 初回（候補出し → Plan=3 採用で基準作成）
       - name: Step 1a: 初回 候補出し
-        env: { HF_HOME: ~/.cache/huggingface }
+        env:
+          HF_HOME: ~/.cache/huggingface
         run: |
           python PVM.py --input_csv examples/sample_texts.csv --text_col text \
             --project ci1 --show-candidates --k_min 2 --k_max 5 --pca_var 0.8 --batch 2 --log_level INFO
+
       - name: Step 1b: Plan=3 を採用して基準作成
-        env: { HF_HOME: ~/.cache/huggingface }
+        env:
+          HF_HOME: ~/.cache/huggingface
         run: |
           python PVM.py --input_csv examples/sample_texts.csv --text_col text \
             --project ci1 --use-plan 3
 
       # ② 2回目（クラスタロック：基準固定で再割当）
       - name: Step 2: 2回目 クラスタロック
-        env: { HF_HOME: ~/.cache/huggingface }
+        env:
+          HF_HOME: ~/.cache/huggingface
         run: |
           python PVM.py --input_csv examples/sample_texts.csv --text_col text \
             --project ci2 --baseline-from ci1
 
       # ③ 2回目（柔軟適用：新話題を吸収）
       - name: Step 3: 2回目 柔軟適用（アンロック）
-        env: { HF_HOME: ~/.cache/huggingface }
+        env:
+          HF_HOME: ~/.cache/huggingface
         run: |
           python PVM.py --input_csv examples/sample_texts.csv --text_col text \
             --project ci3 --baseline-from ci1 --unlock --unlock-q 0.90 --unlock-add-k 2
 
-      # 出力の存在チェック（生成されていなければ失敗）
+      # 生成物の存在チェック（無ければ失敗）
       - name: Check outputs exist
         run: |
-          test -f "PVMresult/run_ci1_01/k_candidates.csv" || true
-          test -f "PVMresult/run_ci1_01/k_candidates_stage2.csv" || true
-          test -f "PVMresult/run_ci1_02/結果スコア.csv"
           test -f "PVMresult/baseline_ci1/history/v001/manifest.json"
+          test -f "PVMresult/run_ci1_02/結果スコア.csv"
           test -f "PVMresult/run_ci2_01/結果スコア.csv"
           test -f "PVMresult/run_ci3_02/結果スコア.csv"
 
