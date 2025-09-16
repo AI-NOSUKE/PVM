@@ -16,7 +16,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 90
     env:
-      # ✅ runner.temp の代わりに github.workspace を利用（常に利用可）
       HF_HOME: ${{ github.workspace }}/.hf_cache
       PIP_CACHE_DIR: ${{ github.workspace }}/.pip_cache
       HF_HUB_ENABLE_HF_TRANSFER: "1"
@@ -53,7 +52,6 @@ jobs:
           set -euxo pipefail
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-          # パッケージ化未対応でもCIが落ちないよう保険（厳格化したければ || true を外す）
           pip install . || true
           mkdir -p logs
 
@@ -67,8 +65,8 @@ jobs:
           find . -maxdepth 2 -type f | sort | sed -n '1,200p'
           test -f PVM.py
           test -f examples/sample_texts.csv
-          echo "HF_HOME=$HF_HOME"
-          echo "PIP_CACHE_DIR=$PIP_CACHE_DIR"
+          echo "--- show help ---"
+          python PVM.py -h | sed -n '1,200p'
 
       - name: Show environment
         shell: bash
@@ -76,6 +74,8 @@ jobs:
           set -euxo pipefail
           python --version
           pip list | sed -n '1,120p'
+          echo "HF_HOME=$HF_HOME"
+          echo "PIP_CACHE_DIR=$PIP_CACHE_DIR"
           df -h || true
           free -h || true
 
@@ -100,35 +100,37 @@ jobs:
           EOS
           chmod +x /usr/local/bin/run_with_retry
 
-      # ① 普通 → lock
+      # ① 通常実行 → ロック再実行
       - name: Flow 1 - normal then lock
         shell: bash
         run: |
           set -euxo pipefail
-          { time run_with_retry python PVM.py examples/sample_texts.csv --output_dir=run1; } 2>&1 | tee logs/flow1_normal.txt
-          { time run_with_retry python PVM.py examples/sample_texts.csv --output_dir=run1_lock --lock_dir=run1; } 2>&1 | tee logs/flow1_lock.txt
+          { time run_with_retry python PVM.py --input_csv examples/sample_texts.csv --project run1; } 2>&1 | tee logs/flow1_normal.txt
+          # ロックは直前成果を基準として再実行（baseline-from は run1 を想定）
+          { time run_with_retry python PVM.py --input_csv examples/sample_texts.csv --project run1_lock --baseline-from run1; } 2>&1 | tee logs/flow1_lock.txt
           echo "ok" > logs/flow1.done
 
-      # ② 普通 → unlock
+      # ② 通常実行 → アンロック再実行（unlockフラグで再探索）
       - name: Flow 2 - normal then unlock
         shell: bash
         run: |
           set -euxo pipefail
-          { time run_with_retry python PVM.py examples/sample_texts.csv --output_dir=run2; } 2>&1 | tee logs/flow2_normal.txt
-          { time run_with_retry python PVM.py examples/sample_texts.csv --output_dir=run2_unlock; } 2>&1 | tee logs/flow2_unlock.txt
+          { time run_with_retry python PVM.py --input_csv examples/sample_texts.csv --project run2; } 2>&1 | tee logs/flow2_normal.txt
+          { time run_with_retry python PVM.py --input_csv examples/sample_texts.csv --project run2_unlock --unlock --baseline-from run2; } 2>&1 | tee logs/flow2_unlock.txt
           echo "ok" > logs/flow2.done
 
-      # ③ candidates → plan → lock
+      # ③ 候補探索 → Plan指定 → ロック再実行
       - name: Flow 3 - candidates -> plan -> lock
         shell: bash
         run: |
           set -euxo pipefail
-          { time run_with_retry python PVM.py examples/sample_texts.csv --output_dir=candidates --candidates; } 2>&1 | tee logs/flow3_candidates.txt
+          # 候補表示（結果に plan*.json が出力される想定）
+          { time run_with_retry python PVM.py --input_csv examples/sample_texts.csv --project candidates --show-candidates; } 2>&1 | tee logs/flow3_candidates.txt
           PLAN_JSON=$(ls -1 candidates/plan*.json 2>/dev/null | head -n1)
           if [ -z "$PLAN_JSON" ]; then echo "No plan JSON found under candidates/" >&2; exit 2; fi
           echo "Using plan: $PLAN_JSON"
-          { time run_with_retry python PVM.py examples/sample_texts.csv --output_dir=plan3 --use_plan="$PLAN_JSON"; } 2>&1 | tee logs/flow3_plan.txt
-          { time run_with_retry python PVM.py examples/sample_texts.csv --output_dir=plan3_lock --lock_dir=plan3; } 2>&1 | tee logs/flow3_lock.txt
+          { time run_with_retry python PVM.py --input_csv examples/sample_texts.csv --project plan3 --use-plan "$PLAN_JSON"; } 2>&1 | tee logs/flow3_plan.txt
+          { time run_with_retry python PVM.py --input_csv examples/sample_texts.csv --project plan3_lock --baseline-from plan3; } 2>&1 | tee logs/flow3_lock.txt
           echo "ok" > logs/flow3.done
 
       - name: Assert outputs exist (light)
