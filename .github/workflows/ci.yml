@@ -1,84 +1,88 @@
-name: CI
+﻿name: PVM CI
 
 on:
   push:
     branches: [ "main" ]
   pull_request:
     branches: [ "main" ]
-  workflow_dispatch: {}
-  schedule:
-    - cron: "0 18 * * 0"
+  workflow_dispatch:
+
+concurrency:
+  group: pvm-ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  pvm-flow:
+  test:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
-
+    timeout-minutes: 60
+    env:
+      HF_HOME: ${{ github.runner_temp }}/.hf_cache
+      HF_HUB_ENABLE_HF_TRANSFER: "1"
+      PIP_NO_INPUT: "1"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Python
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+          cache: "pip"
 
-      - name: Cache pip
+      - name: Cache HF/Torch
         uses: actions/cache@v4
         with:
-          path: ~/.cache/pip
-          key: pip-${{ runner.os }}-${{ hashFiles('**/requirements.txt') }}
-          restore-keys: |
-            pip-${{ runner.os }}-
-
-      - name: Cache HF
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/huggingface
-          key: hf-${{ runner.os }}-ruri-v3-310m
-          restore-keys: |
-            hf-${{ runner.os }}-
+          path: |
+            ${{ env.HF_HOME }}
+            ~/.cache/torch
+          key: ${{ runner.os }}-hf-${{ hashFiles('requirements.txt') }}
 
       - name: Install deps
-        run: python -m pip install --upgrade pip && pip install -r requirements.txt
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          pip install . || true
 
-      - name: List files
-        run: ls -la && ls -la examples
+      - name: Show environment
+        shell: bash
+        run: |
+          python --version
+          pip list | sed -n '1,60p'
+          echo "HF_HOME=$HF_HOME"
 
-      - name: Step 1a candidates
-        env:
-          HF_HOME: ~/.cache/huggingface
-        run: python PVM.py --input_csv examples/sample_texts.csv --text_col text --project ci1 --show-candidates --k_min 2 --k_max 5 --pca_var 0.8 --batch 2 --log_level INFO
+      - name: Flow 1 - normal then lock
+        shell: bash
+        run: |
+          set -eux
+          python PVM.py examples/sample_texts.csv --output_dir=run1
+          python PVM.py examples/sample_texts.csv --output_dir=run1_lock --lock_dir=run1
 
-      - name: Step 1b use-plan 3
-        env:
-          HF_HOME: ~/.cache/huggingface
-        run: python PVM.py --input_csv examples/sample_texts.csv --text_col text --project ci1 --use-plan 3
+      - name: Flow 2 - normal then unlock
+        shell: bash
+        run: |
+          set -eux
+          python PVM.py examples/sample_texts.csv --output_dir=run2
+          python PVM.py examples/sample_texts.csv --output_dir=run2_unlock
 
-      - name: Step 2 lock
-        env:
-          HF_HOME: ~/.cache/huggingface
-        run: python PVM.py --input_csv examples/sample_texts.csv --text_col text --project ci2 --baseline-from ci1
+      - name: Flow 3 - candidates -> plan -> lock
+        shell: bash
+        run: |
+          set -eux
+          python PVM.py examples/sample_texts.csv --output_dir=candidates --candidates
+          python PVM.py examples/sample_texts.csv --output_dir=plan3 --use_plan=candidates/plan3.json
+          python PVM.py examples/sample_texts.csv --output_dir=plan3_lock --lock_dir=plan3
 
-      - name: Step 3 unlock
-        env:
-          HF_HOME: ~/.cache/huggingface
-        run: python PVM.py --input_csv examples/sample_texts.csv --text_col text --project ci3 --baseline-from ci1 --unlock --unlock-q 0.90 --unlock-add-k 2
-
-      - name: Ensure UTF-8 locale
-        run: echo "LC_ALL=C.UTF-8" >> $GITHUB_ENV
-
-      - name: Summarize outputs
-        run: echo "PWD=$(pwd)"; echo "==== PVMresult tree (depth<=3) ===="; find PVMresult -maxdepth 3 -type d -print | sort; find PVMresult -maxdepth 3 -type f -print | sort | sed -n '1,200p'
-
-      - name: Verify baseline dir exists
-        run: test -d PVMresult/baseline_ci1/history/v001
-
-      - name: Verify run dirs exist
-        run: test -d PVMresult/run_ci1_02 && test -d PVMresult/run_ci2_01 && test -d PVMresult/run_ci3_02
-
-      - name: Upload artifacts
+      - name: Upload artifacts (always)
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: pvm-ci-full
-          path: PVMresult/**
+          name: pvm-outputs
+          path: |
+            run1
+            run1_lock
+            run2
+            run2_unlock
+            candidates
+            plan3
+            plan3_lock
