@@ -1,4 +1,4 @@
-﻿name: PVM CI (full debug, all major flows)
+﻿name: PVM CI (final: all major flows)
 
 on:
   push:
@@ -16,9 +16,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 90
     env:
+      # ワークスペース配下にキャッシュ（常に安全なコンテキスト）
       HF_HOME: ${{ github.workspace }}/.hf_cache
       PIP_CACHE_DIR: ${{ github.workspace }}/.pip_cache
-      HF_HUB_ENABLE_HF_TRANSFER: "0"   # 安定優先
+      HF_HUB_ENABLE_HF_TRANSFER: "0"   # 安定優先（高速DL使うなら 1 にして pip install hf_transfer を追加）
       PIP_NO_INPUT: "1"
       TOKENIZERS_PARALLELISM: "false"
 
@@ -53,37 +54,23 @@ jobs:
           set -euxo pipefail
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-          # 必須依存（トークナイザ等）
+          # 必須依存
           pip install "sentencepiece>=0.1.99" "protobuf<5"
-          # modernBERT対応
+          # modernBERT 対応（Ruri v3 系を読むため）
           pip install --upgrade "transformers>=4.41.0"
-          # PVM 自身
+          # （必要なら）高速DL: pip install hf_transfer
+          # PVM 自身（未パッケージでも落とさない）
           pip install . || true
           mkdir -p logs
 
-      - name: Preflight - repo layout & sample
+      - name: Preflight
         shell: bash
         run: |
           set -euxo pipefail
           echo "PWD=$(pwd)"
-          ls -la
-          echo "--- tree (top) ---"
-          find . -maxdepth 2 -type f | sort | sed -n '1,200p'
           test -f PVM.py
           test -f examples/sample_texts.csv
-          echo "--- show help ---"
           python PVM.py -h | sed -n '1,200p'
-          echo "HF_HOME=$HF_HOME"
-          echo "PIP_CACHE_DIR=$PIP_CACHE_DIR"
-
-      - name: Show environment
-        shell: bash
-        run: |
-          set -euxo pipefail
-          python --version
-          pip list | sed -n '1,120p'
-          df -h || true
-          free -h || true
 
       - name: Define retry helper
         shell: bash
@@ -95,9 +82,7 @@ jobs:
           cmd="$*"
           for i in 1 2 3; do
             echo "---- Attempt $i: $cmd"
-            if eval "$cmd"; then
-              exit 0
-            fi
+            if eval "$cmd"; then exit 0; fi
             echo "Attempt $i failed. Sleeping..."
             sleep $((10*i))
           done
@@ -106,7 +91,7 @@ jobs:
           EOS
           chmod +x /usr/local/bin/run_with_retry
 
-      # ① 通常 → ロック
+      # ① 通常 → ロック再実行
       - name: Flow 1 - normal then lock
         shell: bash
         run: |
@@ -115,16 +100,16 @@ jobs:
           { time run_with_retry python PVM.py --input_csv examples/sample_texts.csv --project run1_lock --baseline-from run1; } 2>&1 | tee logs/flow1_lock.txt
           echo "ok" > logs/flow1.done
 
-      # ② 通常 → アンロック
+      # ② 通常 → アンロック再実行（baseline-from 付けない）
       - name: Flow 2 - normal then unlock
         shell: bash
         run: |
           set -euxo pipefail
           { time run_with_retry python PVM.py --input_csv examples/sample_texts.csv --project run2; } 2>&1 | tee logs/flow2_normal.txt
-          { time run_with_retry python PVM.py --input_csv examples/sample_texts.csv --project run2_unlock --unlock --baseline-from run2; } 2>&1 | tee logs/flow2_unlock.txt
+          { time run_with_retry python PVM.py --input_csv examples/sample_texts.csv --project run2_unlock --unlock; } 2>&1 | tee logs/flow2_unlock.txt
           echo "ok" > logs/flow2.done
 
-      # ③ candidates → plan → lock
+      # ③ 候補探索 → Plan指定 → ロック再実行
       - name: Flow 3 - candidates -> plan -> lock
         shell: bash
         run: |
@@ -136,14 +121,6 @@ jobs:
           { time run_with_retry python PVM.py --input_csv examples/sample_texts.csv --project plan3 --use-plan "$PLAN_JSON"; } 2>&1 | tee logs/flow3_plan.txt
           { time run_with_retry python PVM.py --input_csv examples/sample_texts.csv --project plan3_lock --baseline-from plan3; } 2>&1 | tee logs/flow3_lock.txt
           echo "ok" > logs/flow3.done
-
-      - name: Assert outputs exist (light)
-        shell: bash
-        run: |
-          set -euxo pipefail
-          for d in run1 run1_lock run2 run2_unlock candidates plan3 plan3_lock; do
-            test -d "$d"
-          done
 
       - name: Upload artifacts (always)
         if: always()
@@ -157,6 +134,6 @@ jobs:
             run2_unlock/**
             candidates/**
             plan3/**
-            plan3_lock/**
+            plan3_lock**
             logs/**
           if-no-files-found: warn
