@@ -7,45 +7,20 @@ on:
     branches: [ "main" ]
   workflow_dispatch: {}
   schedule:
-
-    - cron: "0 18 * * 0"  # 毎週月曜朝に自動実行（JST）
-
+    - cron: "0 18 * * 0"  # 毎週月曜朝（JST）に自動実行
 
 jobs:
-  smoke:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v4
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-      - name: Cache pip
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pip
-          key: pip-${{ runner.os }}-${{ hashFiles('**/requirements.txt') }}
-          restore-keys: |
-            pip-${{ runner.os }}-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-      - name: CLI help should work
-        run: python PVM.py --help
-
-  sample-run:
-    needs: smoke
-    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+  pvm-flow:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+
       - name: Cache pip
         uses: actions/cache@v4
         with:
@@ -53,6 +28,7 @@ jobs:
           key: pip-${{ runner.os }}-${{ hashFiles('**/requirements.txt') }}
           restore-keys: |
             pip-${{ runner.os }}-
+
       - name: Cache HuggingFace models
         uses: actions/cache@v4
         with:
@@ -60,33 +36,40 @@ jobs:
           key: hf-${{ runner.os }}-ruri-v3-310m
           restore-keys: |
             hf-${{ runner.os }}-
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-      - name: Prepare tiny CSV (3 rows)
+
+      # ① 初回（候補出し & Plan採用）
+      - name: Step 1: 初回候補出し
         run: |
-          mkdir -p examples
-          cat > examples/ci_sample.csv << 'EOF'
-          text
-          これはテストです
-          次の行です
-          マーケティングの文章です
-          EOF
-      - name: Run PVM on tiny data (candidate only)
-        env:
-          HF_HOME: ~/.cache/huggingface
+          python PVM.py --input_csv examples/sample_texts.csv --text_col text --show-candidates
+      - name: Step 1b: Plan=3 採用
         run: |
-          python PVM.py --input_csv examples/ci_sample.csv --text_col text \
-            --show-candidates --k_min 2 --k_max 2 --pca_var 0.8 --batch 1 --log_level INFO
+          python PVM.py --input_csv examples/sample_texts.csv --text_col text --use-plan 3
+
+      # ② 2回目クラスターロック
+      - name: Step 2: 2回目クラスターロック
+        run: |
+          python PVM.py --input_csv examples/sample_texts.csv --text_col text
+
+      # ③ 2回目柔軟適用（アンロック）
+      - name: Step 3: 2回目柔軟適用
+        run: |
+          python PVM.py --input_csv examples/sample_texts.csv --text_col text --unlock
+
+      # 成果物チェック
       - name: Check outputs exist
         run: |
-          test -f PVMresult/run_1回目_01/k_candidates.csv
-          test -f PVMresult/run_1回目_01/k_candidates_stage2.csv
+          test -f PVMresult/run_1回目_02/結果スコア.csv
+          test -f PVMresult/run_1回目_02/結果レポート.json
+          test -f PVMresult/run_2回目_01/結果スコア.csv
+          test -f PVMresult/run_2回目_02/結果スコア.csv
+
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: pvm-ci-outputs
-          path: |
-            PVMresult/run_1回目_01/k_candidates.csv
-            PVMresult/run_1回目_01/k_candidates_stage2.csv
+          path: PVMresult/**
