@@ -38,14 +38,15 @@ PCA → ICA① → KMeans → ICA②（セントロイド再分解）→ KMeans 
 
 ## インストール（ローカル）
 
-`powershell
+```powershell
 git clone https://github.com/AI-NOSUKE/PVM.git
 cd PVM
 python -m venv .venv
-.\.venv\Scripts\activate    # Windows
+.\.venv\Scripts
+ctivate    # Windows
 # source .venv/bin/activate # macOS/Linux
 pip install -r requirements.txt
-`
+```
 
 - Python 3.11+ 推奨。初回は埋め込みモデル取得で少し時間がかかることがあります。
 
@@ -55,9 +56,9 @@ pip install -r requirements.txt
 
 ### ① CIサンプル（必ず通る最小テスト）
 
-固定データ（examples/sample_texts.csv、列名 	ext）で検証しています。
+固定データ（`examples/sample_texts.csv`、列名 `text`）で検証しています。
 
-`powershell
+```powershell
 # 候補探索
 python PVM.py --input_csv examples/sample_texts.csv --text_col text --show-candidates
 
@@ -69,14 +70,14 @@ python PVM.py
 
 # 柔軟適用（新話題の吸収）
 python PVM.py --unlock
-`
+```
 
 ### ② ローカル利用（最小コマンド）
 
-あなたのCSVのテキスト列名が **	ext** なら --text_col は不要。  
+あなたのCSVのテキスト列名が **`text`** なら --text_col は不要。  
 複数の試行結果を分けたい時だけ --project を付けます。
 
-`powershell
+```powershell
 # 候補探索
 python PVM.py --show-candidates
 
@@ -88,20 +89,20 @@ python PVM.py
 
 # 柔軟適用（アンロック）
 python PVM.py --unlock
-`
+```
 
 👉 サンプルCSVはこちら：[examples/sample_texts.csv](examples/sample_texts.csv)
 
 <details>
 <summary><b>参考: 実行ログの例（クリックで展開）</b></summary>
 
-`	ext
+```text
 INFO PVM: embedding model = cl-nagoya/ruri-v3-310m
 INFO PVM: candidates search k in [8..16], seed=42
 INFO PVM: stage-2 compare TOP5 → results written to PVMresult/k_candidates_stage2.csv
 INFO PVM: global plan rank=1 selected → baseline saved to PVMresult/baseline_1回目/
 INFO PVM: locked apply done → results written to PVMresult/結果スコア.csv
-`
+```
 </details>
 
 ---
@@ -115,7 +116,7 @@ INFO PVM: locked apply done → results written to PVMresult/結果スコア.csv
 | --use-plan N | 候補の **rank=N** を採用して基準作成 |
 | --unlock | 柔軟適用：新話題を追加クラスタで吸収 |
 | --input_csv PATH / --input_xlsx PATH | 入力データの指定（いずれか一つ） |
-| --text_col NAME | テキスト列名（既定 	ext） |
+| --text_col NAME | テキスト列名（既定 `text`） |
 | --project NAME | 出力の保存先名（例：1回目 / 2回目） |
 
 > 補足：--id_col は任意（未指定なら内部付番）。
@@ -176,3 +177,4 @@ INFO PVM: locked apply done → results written to PVMresult/結果スコア.csv
 
 - **License**：PVM License v1.2（詳細は LICENSE / LICENSE_FAQ.md を参照）
 - **Author**：AI-NOSUKE（透明ペインター / Phantom Color Painter）
+
