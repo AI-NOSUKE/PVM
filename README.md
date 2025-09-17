@@ -3,7 +3,7 @@
 PCA → ICA① → KMeans → ICA②（セントロイド再分解）→ KMeans の二段階アプローチで、**解釈しやすく安定**したクラスタを作るための研究・実務向けツール。
 
 ![python](https://img.shields.io/badge/python-3.11%2B-blue)
-![license](https://img.shields.io/badge/License-PVM%20v1.2-green)
+![license](https://img.shields.io/badge/[LICENSE](LICENSE)-PVM%20v1.2-green)
 ![release](https://img.shields.io/github/v/release/AI-NOSUKE/PVM?color=orange)
 ![ci](https://github.com/AI-NOSUKE/PVM/actions/workflows/ci.yml/badge.svg)
 
@@ -52,10 +52,10 @@ pip install -r requirements.txt
 ## クイックスタート
 
 ### ① CIサンプル（必ず通る最小テスト）
-CI では固定データ（`examples/sample_texts.csv`、列名 `text`）で検証しています。
+CI では固定データ（`[examples/sample_texts.csv](examples/sample_texts.csv)`、列名 `text`）で検証しています。
 ```powershell
 # 候補探索
-python PVM.py --input_csv examples/sample_texts.csv --text_col text --show-candidates
+python PVM.py --input_csv [examples/sample_texts.csv](examples/sample_texts.csv) --text_col text --show-candidates
 
 # Plan採用（例：rank=1）
 python PVM.py --use-plan 1
@@ -148,5 +148,16 @@ python PVM.py --unlock
 ---
 
 ## ライセンス / 作者
-- **License**：PVM License v1.2（詳細は `LICENSE` / `LICENSE_FAQ.md` を参照）
+- **[LICENSE](LICENSE)**：PVM [LICENSE](LICENSE) v1.2（詳細は `[LICENSE](LICENSE)` / `[LICENSE_FAQ.md](LICENSE_FAQ.md)` を参照）
 - **Author**：AI-NOSUKE（透明ペインター / Phantom Color Painter）
+
+<details>
+<summary><b>参考: 実行ログの例（クリックで展開）</b></summary>
+
+`	ext
+INFO PVM: model=ruri-v3-310m, k=[8..16], seed=42
+INFO PVM: stage-2 TOP5 → PVMresult/k_candidates_stage2.csv
+INFO PVM: plan rank=1 → baseline saved
+INFO PVM: locked apply → PVMresult/結果スコア.csv
+`
+</details>
