@@ -3,7 +3,7 @@
 PCA → ICA① → KMeans → ICA②（セントロイド再分解）→ KMeans の二段階アプローチで、**解釈しやすく安定**したクラスタを作るための研究・実務向けツール。
 
 ![python](https://img.shields.io/badge/python-3.11%2B-blue)
-![license](https://img.shields.io/badge/[LICENSE](LICENSE)-PVM%20v1.2-green)
+![license](https://img.shields.io/badge/License-PVM%20v1.2-green)
 ![release](https://img.shields.io/github/v/release/AI-NOSUKE/PVM?color=orange)
 ![ci](https://github.com/AI-NOSUKE/PVM/actions/workflows/ci.yml/badge.svg)
 
@@ -32,30 +32,30 @@ PCA → ICA① → KMeans → ICA②（セントロイド再分解）→ KMeans 
   - **再現配慮**：乱数シード・baselineロック・ログ出力で運用を安定化。
 
 > 💡 初回を **無指定で実行**すると、自動でベスト Plan が採用され基準が作成されます。  
-> 意図を明示したい場合は `--show-candidates → --use-plan N` を推奨。
+> 意図を明示したい場合は --show-candidates → --use-plan N を推奨。
 
 ---
 
 ## インストール（ローカル）
-```powershell
+`powershell
 git clone https://github.com/AI-NOSUKE/PVM.git
 cd PVM
 python -m venv .venv
 .\.venv\Scripts\activate    # Windows
 # source .venv/bin/activate # macOS/Linux
 pip install -r requirements.txt
-```
-- Python 3.11+ 推奨。Ruri 埋め込みを使うため、初回は `torch` / `transformers` の取得に時間がかかることがあります。
+`
+- Python 3.11+ 推奨。初回は埋め込みモデル取得で少し時間がかかることがあります。
 
 ---
 
 ## クイックスタート
 
 ### ① CIサンプル（必ず通る最小テスト）
-CI では固定データ（`[examples/sample_texts.csv](examples/sample_texts.csv)`、列名 `text`）で検証しています。
-```powershell
+固定データ（examples/sample_texts.csv、列名 	ext）で検証しています。
+`powershell
 # 候補探索
-python PVM.py --input_csv [examples/sample_texts.csv](examples/sample_texts.csv) --text_col text --show-candidates
+python PVM.py --input_csv examples/sample_texts.csv --text_col text --show-candidates
 
 # Plan採用（例：rank=1）
 python PVM.py --use-plan 1
@@ -65,12 +65,12 @@ python PVM.py
 
 # 柔軟適用（新話題の吸収）
 python PVM.py --unlock
-```
+`
 
 ### ② ローカル利用（最小コマンド）
-あなたのCSVのテキスト列名が **text** なら `--text_col` は不要。  
-複数の試行結果を分けたい時だけ `--project` を付けます。
-```powershell
+あなたのCSVのテキスト列名が **text** なら --text_col は不要。  
+複数の試行結果を分けたい時だけ --project を付けます。
+`powershell
 # 候補探索
 python PVM.py --show-candidates
 
@@ -82,8 +82,21 @@ python PVM.py
 
 # 柔軟適用（アンロック）
 python PVM.py --unlock
-```
-> 列名が `text` 以外なら `--text_col 列名` を付与してください。
+`
+
+👉 サンプルCSVはこちら：[examples/sample_texts.csv](examples/sample_texts.csv)
+
+<details>
+<summary><b>参考: 実行ログの例（クリックで展開）</b></summary>
+
+`	ext
+INFO PVM: embedding model = cl-nagoya/ruri-v3-310m
+INFO PVM: candidates search k in [8..16], seed=42
+INFO PVM: stage-2 compare TOP5 → results written to PVMresult/k_candidates_stage2.csv
+INFO PVM: global plan rank=1 selected → baseline saved to PVMresult/baseline_1回目/
+INFO PVM: locked apply done → results written to PVMresult/結果スコア.csv
+`
+</details>
 
 ---
 
@@ -91,49 +104,49 @@ python PVM.py --unlock
 | オプション | 説明 |
 |---|---|
 | *(無指定)* | 既存の基準でロック適用。**初回は自動採用で基準作成** |
-| `--show-candidates` | 候補のみ出力（基準は作らない） |
-| `--use-plan N` | 候補の **rank=N** を採用して基準作成 |
-| `--unlock` | 柔軟適用：新話題を追加クラスタで吸収 |
-| `--input_csv PATH` / `--input_xlsx PATH` | 入力データの指定（いずれか一つ） |
-| `--text_col NAME` | テキスト列名（既定 `text`） |
-| `--project NAME` | 出力の保存先名（例：`1回目` / `2回目`） |
+| --show-candidates | 候補のみ出力（基準は作らない） |
+| --use-plan N | 候補の **rank=N** を採用して基準作成 |
+| --unlock | 柔軟適用：新話題を追加クラスタで吸収 |
+| --input_csv PATH / --input_xlsx PATH | 入力データの指定（いずれか一つ） |
+| --text_col NAME | テキスト列名（既定 	ext） |
+| --project NAME | 出力の保存先名（例：1回目 / 2回目） |
 
-> 補足：`--id_col` は任意（未指定なら内部付番）。
+> 補足：--id_col は任意（未指定なら内部付番）。
 
 ---
 
 ## 補助オプション（その他）
 | オプション | 説明 |
 |---|---|
-| `--unlock-q Q` | 新話題検出の距離分位点（0<**Q**<1、既定 0.90） |
-| `--unlock-add-k K` | 追加クラスタの上限（既定 2） |
-| `--max_ic_cols N` | `結果スコア.csv` に出力する IC 列の上限 |
-| `--k_min N` / `--k_max N` | 候補探索の K 範囲 |
-| `--embedding_model NAME` | 既定：`cl-nagoya/ruri-v3-310m` |
-| `--batch N` / `--max_len N` | 埋め込みのバッチサイズ/最大長 |
-| `--pca_var R` | PCA の累積寄与（既定 0.90） |
-| `--random_state S` | 乱数シード |
-| `--log_level LEVEL` | ログレベル（INFO/DEBUG など） |
-| **日本語alias** | `--候補表示`（show-candidates）、`--採用プラン`（use-plan）、`--基準流用`（baseline-from 相当機能の環境用）、`--柔軟適用`（unlock）。※利便性向けの補助。 |
+| --unlock-q Q | 新話題検出の距離分位点（0<**Q**<1、既定 0.90） |
+| --unlock-add-k K | 追加クラスタの上限（既定 2） |
+| --max_ic_cols N | 結果スコア.csv に出力する IC 列の上限 |
+| --k_min N / --k_max N | 候補探索の K 範囲 |
+| --embedding_model NAME | 既定：cl-nagoya/ruri-v3-310m |
+| --batch N / --max_len N | 埋め込みのバッチサイズ/最大長 |
+| --pca_var R | PCA の累積寄与（既定 0.90） |
+| --random_state S | 乱数シード |
+| --log_level LEVEL | ログレベル（INFO/DEBUG など） |
+| **日本語alias** | --候補表示 / --採用プラン / --柔軟適用 など（利便性向けの補助） |
 
 ---
 
 ## 出力ファイル
-代表的な成果物（プロジェクトごとに `PVMresult/` 以下へ保存）：
-- `結果スコア.csv` … 各候補/各クラスタのスコア・IC 指標
-- `結果レポート.json` … 実行情報・採用 Plan などのメタ
-- `AI_命名依頼.md` … クラスタ命名依頼テンプレ
-- `k_candidates.csv` … 候補一覧（一次）
-- `k_candidates_stage2.csv` … 二段階後の候補比較（TOP5 等）
-- `k_candidates_assignments.csv` … 割当情報のサマリ
-- `logs/` … 実行ログ
+代表的な成果物（プロジェクトごとに PVMresult/ 以下へ保存）：
+- 結果スコア.csv … 各候補/各クラスタのスコア・IC 指標
+- 結果レポート.json … 実行情報・採用 Plan などのメタ
+- AI_命名依頼.md … クラスタ命名依頼テンプレ
+- k_candidates.csv … 候補一覧（一次）
+- k_candidates_stage2.csv … 二段階後の候補比較（TOP5 等）
+- k_candidates_assignments.csv … 割当情報のサマリ
+- logs/ … 実行ログ
 
 ---
 
 ## 運用の目安と再現性
 - **件数レンジ**：超少量（例：<30）では候補探索が粗くなります。十分な件数を推奨。  
-- **初回の自動採用**：無指定で走らせると自動採用で基準作成。意図を固定したい場合は `--use-plan N` を明示。  
-- **再現性**：`--random_state` の固定 + **baselineロック** 運用を推奨。  
+- **初回の自動採用**：無指定で走らせると自動採用で基準作成。意図を固定したい場合は --use-plan N を明示。  
+- **再現性**：--random_state の固定 + **baselineロック** 運用を推奨。  
 - **モデル依存**：埋め込みモデルを変えると軸解釈が変わることがあります（既定は Ruri）。
 
 ---
@@ -148,16 +161,5 @@ python PVM.py --unlock
 ---
 
 ## ライセンス / 作者
-- **[LICENSE](LICENSE)**：PVM [LICENSE](LICENSE) v1.2（詳細は `[LICENSE](LICENSE)` / `[LICENSE_FAQ.md](LICENSE_FAQ.md)` を参照）
+- **License**：PVM License v1.2（詳細は LICENSE / LICENSE_FAQ.md を参照）
 - **Author**：AI-NOSUKE（透明ペインター / Phantom Color Painter）
-
-<details>
-<summary><b>参考: 実行ログの例（クリックで展開）</b></summary>
-
-`	ext
-INFO PVM: model=ruri-v3-310m, k=[8..16], seed=42
-INFO PVM: stage-2 TOP5 → PVMresult/k_candidates_stage2.csv
-INFO PVM: plan rank=1 → baseline saved
-INFO PVM: locked apply → PVMresult/結果スコア.csv
-`
-</details>
