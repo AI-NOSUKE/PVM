@@ -1,4 +1,4 @@
-﻿# PVM (Phantom Vector Mapping)
+# PVM (Phantom Vector Mapping)
 **二段階 ICA による日本語テキストクラスタリングエンジン**  
 PCA → ICA① → KMeans → ICA②（セントロイド再分解）→ KMeans の二段階アプローチで、**解釈しやすく安定**したクラスタを作るための研究・実務向けツール。
 
@@ -25,7 +25,7 @@ PCA → ICA① → KMeans → ICA②（セントロイド再分解）→ KMeans 
 ---
 
 ## 概要
-- **目的**：実務で「意味が取り出しやすいクラスタ」を安定して得る。  
+- **目的**：実務で「意味が取り出しやすいクラスタ」を安定して得る。
 - **特徴**：
   - **二段階 ICA**：一次の独立成分で大枠を掴み、**クラスタ重心を再分解（ICA②）**して輪郭を整える。
   - **候補→採用→ロック/アンロック**の一連フローをコマンドで直感操作。
@@ -176,4 +176,3 @@ INFO PVM: locked apply done → results written to PVMresult/結果スコア.csv
 
 - **License**：PVM License v1.2（詳細は LICENSE / LICENSE_FAQ.md を参照）
 - **Author**：AI-NOSUKE（透明ペインター / Phantom Color Painter）
-
