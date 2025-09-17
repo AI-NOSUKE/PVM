@@ -37,6 +37,7 @@ PCA → ICA① → KMeans → ICA②（セントロイド再分解）→ KMeans 
 ---
 
 ## インストール（ローカル）
+
 `powershell
 git clone https://github.com/AI-NOSUKE/PVM.git
 cd PVM
@@ -45,11 +46,8 @@ python -m venv .venv
 # source .venv/bin/activate # macOS/Linux
 pip install -r requirements.txt
 `
-- Python 3.11+ 推奨。初回は埋め込みモデル取得で少し時間がかかることがあります。
 
----
-
-## クイックスタート
+- Python 3.11+ 推奨。初回は埋め込みモデル取得で少し時間がかかることがあります。## クイックスタート
 
 ### ① CIサンプル（必ず通る最小テスト）
 固定データ（examples/sample_texts.csv、列名 	ext）で検証しています。
@@ -163,4 +161,5 @@ INFO PVM: locked apply done → results written to PVMresult/結果スコア.csv
 ## ライセンス / 作者
 - **License**：PVM License v1.2（詳細は LICENSE / LICENSE_FAQ.md を参照）
 - **Author**：AI-NOSUKE（透明ペインター / Phantom Color Painter）
+
 
