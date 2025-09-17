@@ -55,6 +55,8 @@ jobs:
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
           pip install "sentencepiece>=0.1.99" "protobuf<5"
           pip install --upgrade "transformers>=4.41.0"
+          # 高速DLしたい場合は以下を有効化：
+          # pip install hf_transfer && echo "HF_HUB_ENABLE_HF_TRANSFER=1" >> $GITHUB_ENV
           pip install . || true
           mkdir -p logs
 
@@ -86,6 +88,7 @@ jobs:
           EOS
           chmod +x /usr/local/bin/run_with_retry
 
+      # ① 通常 → ロック
       - name: Flow 1 - normal then lock
         shell: bash
         run: |
@@ -94,6 +97,7 @@ jobs:
           { time run_with_retry python PVM.py --input_csv examples/sample_texts.csv --project run1_lock --baseline-from run1; } 2>&1 | tee logs/flow1_lock.txt
           echo "ok" > logs/flow1.done
 
+      # ② 通常 → アンロック（baseline-from 付けない）
       - name: Flow 2 - normal then unlock
         shell: bash
         run: |
@@ -102,16 +106,34 @@ jobs:
           { time run_with_retry python PVM.py --input_csv examples/sample_texts.csv --project run2_unlock --unlock; } 2>&1 | tee logs/flow2_unlock.txt
           echo "ok" > logs/flow2.done
 
-      - name: Flow 3 - candidates -> plan -> lock
+      # ③ candidates → plan → lock
+      #   ※ baseline_* が残っていると自動検出で“ロック実行”になり plan*.json が出ずコケる。
+      #     ここで事前に baseline_* を消して候補出し（初回モード）を強制。
+      - name: Flow 3 - candidates -> plan -> lock (force no baseline)
         shell: bash
         run: |
           set -euxo pipefail
+          # (A) baselineを消す（候補出しを強制するため）
+          rm -rf PVMresult/baseline_* || true
+
+          # (B) 候補出し：plan*.json を生成させる
           { time run_with_retry python PVM.py --input_csv examples/sample_texts.csv --project candidates --show-candidates; } 2>&1 | tee logs/flow3_candidates.txt
-          PLAN_JSON=$(ls -1 candidates/plan*.json 2>/dev/null | head -n1)
-          if [ -z "$PLAN_JSON" ]; then echo "No plan JSON found under candidates/" >&2; exit 2; fi
+
+          # (C) plan*.json を取得（無ければエラー）
+          PLAN_JSON=$(ls -1 candidates/plan*.json 2>/dev/null | head -n1 || true)
+          if [ -z "$PLAN_JSON" ]; then
+            echo "No plan JSON found under candidates/ (baseline lock になった可能性)"; 
+            echo "See logs/flow3_candidates.txt"; 
+            exit 2
+          fi
           echo "Using plan: $PLAN_JSON"
+
+          # (D) plan 指定で実行
           { time run_with_retry python PVM.py --input_csv examples/sample_texts.csv --project plan3 --use-plan "$PLAN_JSON"; } 2>&1 | tee logs/flow3_plan.txt
+
+          # (E) その結果をロック
           { time run_with_retry python PVM.py --input_csv examples/sample_texts.csv --project plan3_lock --baseline-from plan3; } 2>&1 | tee logs/flow3_lock.txt
+
           echo "ok" > logs/flow3.done
 
       - name: Upload artifacts (always)
