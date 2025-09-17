@@ -72,7 +72,6 @@ python PVM.py --unlock
 `
 
 ### ② ローカル利用（最小コマンド）
-
 あなたのCSVのテキスト列名が **	ext** なら --text_col は不要。  
 複数の試行結果を分けたい時だけ --project を付けます。
 
@@ -176,3 +175,4 @@ INFO PVM: locked apply done → results written to PVMresult/結果スコア.csv
 
 - **License**：PVM License v1.2（詳細は LICENSE / LICENSE_FAQ.md を参照）
 - **Author**：AI-NOSUKE（透明ペインター / Phantom Color Painter）
+
