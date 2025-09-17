@@ -47,10 +47,16 @@ python -m venv .venv
 pip install -r requirements.txt
 `
 
-- Python 3.11+ 推奨。初回は埋め込みモデル取得で少し時間がかかることがあります。## クイックスタート
+- Python 3.11+ 推奨。初回は埋め込みモデル取得で少し時間がかかることがあります。
+
+---
+
+## クイックスタート
 
 ### ① CIサンプル（必ず通る最小テスト）
+
 固定データ（examples/sample_texts.csv、列名 	ext）で検証しています。
+
 `powershell
 # 候補探索
 python PVM.py --input_csv examples/sample_texts.csv --text_col text --show-candidates
@@ -66,8 +72,10 @@ python PVM.py --unlock
 `
 
 ### ② ローカル利用（最小コマンド）
-あなたのCSVのテキスト列名が **text** なら --text_col は不要。  
+
+あなたのCSVのテキスト列名が **	ext** なら --text_col は不要。  
 複数の試行結果を分けたい時だけ --project を付けます。
+
 `powershell
 # 候補探索
 python PVM.py --show-candidates
@@ -99,6 +107,7 @@ INFO PVM: locked apply done → results written to PVMresult/結果スコア.csv
 ---
 
 ## 主なオプション（基本）
+
 | オプション | 説明 |
 |---|---|
 | *(無指定)* | 既存の基準でロック適用。**初回は自動採用で基準作成** |
@@ -114,6 +123,7 @@ INFO PVM: locked apply done → results written to PVMresult/結果スコア.csv
 ---
 
 ## 補助オプション（その他）
+
 | オプション | 説明 |
 |---|---|
 | --unlock-q Q | 新話題検出の距離分位点（0<**Q**<1、既定 0.90） |
@@ -130,7 +140,9 @@ INFO PVM: locked apply done → results written to PVMresult/結果スコア.csv
 ---
 
 ## 出力ファイル
+
 代表的な成果物（プロジェクトごとに PVMresult/ 以下へ保存）：
+
 - 結果スコア.csv … 各候補/各クラスタのスコア・IC 指標
 - 結果レポート.json … 実行情報・採用 Plan などのメタ
 - AI_命名依頼.md … クラスタ命名依頼テンプレ
@@ -142,6 +154,7 @@ INFO PVM: locked apply done → results written to PVMresult/結果スコア.csv
 ---
 
 ## 運用の目安と再現性
+
 - **件数レンジ**：超少量（例：<30）では候補探索が粗くなります。十分な件数を推奨。  
 - **初回の自動採用**：無指定で走らせると自動採用で基準作成。意図を固定したい場合は --use-plan N を明示。  
 - **再現性**：--random_state の固定 + **baselineロック** 運用を推奨。  
@@ -150,6 +163,7 @@ INFO PVM: locked apply done → results written to PVMresult/結果スコア.csv
 ---
 
 ## 学術背景（要点）
+
 - **ICA①**：潜在因子を独立化して「混じって見えにくい意味」を分離。  
 - **KMeans①**：大枠の群れ（トピック）を把握。  
 - **ICA②（重心再分解）**：クラスタ重心周りの軸を再構成して**輪郭を明確化**。  
@@ -159,7 +173,7 @@ INFO PVM: locked apply done → results written to PVMresult/結果スコア.csv
 ---
 
 ## ライセンス / 作者
+
 - **License**：PVM License v1.2（詳細は LICENSE / LICENSE_FAQ.md を参照）
 - **Author**：AI-NOSUKE（透明ペインター / Phantom Color Painter）
-
 
