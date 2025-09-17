@@ -55,8 +55,6 @@ jobs:
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
           pip install "sentencepiece>=0.1.99" "protobuf<5"
           pip install --upgrade "transformers>=4.41.0"
-          # 高速DLしたい場合は以下を有効化：
-          # pip install hf_transfer && echo "HF_HUB_ENABLE_HF_TRANSFER=1" >> $GITHUB_ENV
           pip install . || true
           mkdir -p logs
 
@@ -97,7 +95,7 @@ jobs:
           { time run_with_retry python PVM.py --input_csv examples/sample_texts.csv --project run1_lock --baseline-from run1; } 2>&1 | tee logs/flow1_lock.txt
           echo "ok" > logs/flow1.done
 
-      # ② 通常 → アンロック（baseline-from 付けない）
+      # ② 通常 → アンロック（※ unlock は引数なしのフラグ）
       - name: Flow 2 - normal then unlock
         shell: bash
         run: |
@@ -107,29 +105,26 @@ jobs:
           echo "ok" > logs/flow2.done
 
       # ③ candidates → plan → lock
-      #   ※ baseline_* が残っていると自動検出で“ロック実行”になり plan*.json が出ずコケる。
-      #     ここで事前に baseline_* を消して候補出し（初回モード）を強制。
-      - name: Flow 3 - candidates -> plan -> lock (force no baseline)
+      #    baseline_* が残っていると自動検出で「ロック実行」に化け、plan*.json/番号選択ができずに落ちる。
+      #    事前に baseline_* を削除して「候補出し（初回モード）」を強制。
+      - name: Flow 3 - candidates -> plan -> lock (robust)
         shell: bash
         run: |
           set -euxo pipefail
-          # (A) baselineを消す（候補出しを強制するため）
+
+          # (A) baseline を消して候補出しを強制
           rm -rf PVMresult/baseline_* || true
 
-          # (B) 候補出し：plan*.json を生成させる
+          # (B) 候補出し
           { time run_with_retry python PVM.py --input_csv examples/sample_texts.csv --project candidates --show-candidates; } 2>&1 | tee logs/flow3_candidates.txt
 
-          # (C) plan*.json を取得（無ければエラー）
-          PLAN_JSON=$(ls -1 candidates/plan*.json 2>/dev/null | head -n1 || true)
-          if [ -z "$PLAN_JSON" ]; then
-            echo "No plan JSON found under candidates/ (baseline lock になった可能性)"; 
-            echo "See logs/flow3_candidates.txt"; 
-            exit 2
-          fi
-          echo "Using plan: $PLAN_JSON"
+          # (C) Plan番号を自動抽出（k_candidates.csv の先頭候補）→ 取れなければ 3 にフォールバック
+          PLAN_ID=$(awk -F, 'NR>1 && $1 ~ /^[0-9]+$/ {print $1; exit}' candidates/k_candidates.csv 2>/dev/null || true)
+          if [ -z "${PLAN_ID:-}" ]; then PLAN_ID=3; fi
+          echo "Using PLAN_ID=${PLAN_ID}"
 
-          # (D) plan 指定で実行
-          { time run_with_retry python PVM.py --input_csv examples/sample_texts.csv --project plan3 --use-plan "$PLAN_JSON"; } 2>&1 | tee logs/flow3_plan.txt
+          # (D) plan 指定で実行（PVMは --use-plan <番号> 形式）
+          { time run_with_retry python PVM.py --input_csv examples/sample_texts.csv --project plan3 --use-plan "${PLAN_ID}"; } 2>&1 | tee logs/flow3_plan.txt
 
           # (E) その結果をロック
           { time run_with_retry python PVM.py --input_csv examples/sample_texts.csv --project plan3_lock --baseline-from plan3; } 2>&1 | tee logs/flow3_lock.txt
