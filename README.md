@@ -1,137 +1,152 @@
-# 📘 PVM (Phantom Vector Mapping)
-[![Python](https://img.shields.io/badge/python-3.11%2B-informational)](#)
-![License](https://img.shields.io/badge/license-PVM%20v1.2-blue)
-[![Last commit](https://img.shields.io/github/last-commit/AI-NOSUKE/PVM)](https://github.com/AI-NOSUKE/PVM/commits/main)
-[![Release](https://img.shields.io/github/v/release/AI-NOSUKE/PVM?display_name=tag&sort=semver)](https://github.com/AI-NOSUKE/PVM/releases)
-[![CI](https://github.com/AI-NOSUKE/PVM/actions/workflows/ci.yml/badge.svg)](https://github.com/AI-NOSUKE/PVM/actions/workflows/ci.yml)
+﻿# PVM (Phantom Vector Mapping)
+**二段階 ICA による日本語テキストクラスタリングエンジン**  
+PCA → ICA① → KMeans → ICA②（セントロイド再分解）→ KMeans の二段階アプローチで、**解釈しやすく安定**したクラスタを作るための研究・実務向けツール。
 
-PVM は、テキストデータを **PCA → ICA → 暫定クラスタ → ICA（重心再分解） → 最終クラスタ** の二段階アプローチで解析する Python ツールです。  
-マーケティングリサーチや文章解析で、曖昧で多義的なテキスト集合から**安定して解釈しやすいクラスタ**を得ることを目的としています。
-
----
-
-## ✨ 特徴（実装ベース）
-- **二段階 ICA + クラスタリング** による安定化と解釈性の向上
-- **Plan（=rank）提案**：初回は k×d 候補を探索し、rank=1 を最良として提示
-- **ロック/アンロック再実行**：既存基準への準拠 or 新話題の吸収に対応
-- **出力**：`結果スコア.csv` / `結果レポート.json` / `AI_命名依頼.md` など（詳細は下記）
-
-> 埋め込みは現状 **Ruri（ruri-v3-310m）** を前提とした実装です。`--embedding_model` で将来拡張を想定していますが、現バージョンでは Ruri のみを公式サポートとしています。
+![python](https://img.shields.io/badge/python-3.11%2B-blue)
+![license](https://img.shields.io/badge/License-PVM%20v1.2-green)
+![release](https://img.shields.io/github/v/release/AI-NOSUKE/PVM?color=orange)
+![ci](https://github.com/AI-NOSUKE/PVM/actions/workflows/ci.yml/badge.svg)
 
 ---
 
-## 📥 インストール
+## 目次
+- [概要](#概要)
+- [インストール（ローカル）](#インストールローカル)
+- [クイックスタート](#クイックスタート)
+  - [① CIサンプル（必ず通る最小テスト）](#①-ciサンプル必ず通る最小テスト)
+  - [② ローカル利用（最小コマンド）](#②-ローカル利用最小コマンド)
+- [主なオプション（基本）](#主なオプション基本)
+- [補助オプション（その他）](#補助オプションその他)
+- [出力ファイル](#出力ファイル)
+- [運用の目安と再現性](#運用の目安と再現性)
+- [学術背景（要点）](#学術背景要点)
+- [ライセンス / 作者](#ライセンス--作者)
 
-Python 3.11 以降を推奨。仮想環境での利用をおすすめします。
+---
 
-```bash
-# 仮想環境の作成
+## 概要
+- **目的**：実務で「意味が取り出しやすいクラスタ」を安定して得る。  
+- **特徴**：
+  - **二段階 ICA**：一次の独立成分で大枠を掴み、**クラスタ重心を再分解（ICA②）**して輪郭を整える。
+  - **候補→採用→ロック/アンロック**の一連フローをコマンドで直感操作。
+  - **再現配慮**：乱数シード・baselineロック・ログ出力で運用を安定化。
+
+> 💡 初回を **無指定で実行**すると、自動でベスト Plan が採用され基準が作成されます。  
+> 意図を明示したい場合は `--show-candidates → --use-plan N` を推奨。
+
+---
+
+## インストール（ローカル）
+```powershell
+git clone https://github.com/AI-NOSUKE/PVM.git
+cd PVM
 python -m venv .venv
-
-# Windows
-.\.venv\Scripts\activate
-
-# macOS/Linux
-source .venv/bin/activate
-
-# 依存ライブラリ
+.\.venv\Scripts\activate    # Windows
+# source .venv/bin/activate # macOS/Linux
 pip install -r requirements.txt
 ```
+- Python 3.11+ 推奨。Ruri 埋め込みを使うため、初回は `torch` / `transformers` の取得に時間がかかることがあります。
 
 ---
 
-## 🚀 クイックスタート
+## クイックスタート
 
-### 1) サンプルデータで候補を確認
-本リポジトリにはミニサンプル `examples/sample_texts.csv`（50行）を用意しています。
-
-```bash
+### ① CIサンプル（必ず通る最小テスト）
+CI では固定データ（`examples/sample_texts.csv`、列名 `text`）で検証しています。
+```powershell
+# 候補探索
 python PVM.py --input_csv examples/sample_texts.csv --text_col text --show-candidates
-```
 
-### 2) 提案 Plan を採用（例：rank=5）
-```bash
-python PVM.py --use-plan 5
-```
+# Plan採用（例：rank=1）
+python PVM.py --use-plan 1
 
-### 3) 2回目以降（ロック実行）
-```bash
+# 2回目以降はロック適用
 python PVM.py
+
+# 柔軟適用（新話題の吸収）
+python PVM.py --unlock
 ```
 
-### 4) 新話題の吸収（アンロック）
-```bash
+### ② ローカル利用（最小コマンド）
+あなたのCSVのテキスト列名が **text** なら `--text_col` は不要。  
+複数の試行結果を分けたい時だけ `--project` を付けます。
+```powershell
+# 候補探索
+python PVM.py --show-candidates
+
+# Plan採用
+python PVM.py --use-plan 1
+
+# 2回目以降（ロック適用）
+python PVM.py
+
+# 柔軟適用（アンロック）
 python PVM.py --unlock
-# 例: しきい値や追加クラスタ上限を調整
-# python PVM.py --unlock-q 0.90 --unlock-add-k 2
 ```
+> 列名が `text` 以外なら `--text_col 列名` を付与してください。
 
 ---
 
-## ⚙️ 主なオプション（コード準拠）
-
+## 主なオプション（基本）
 | オプション | 説明 |
 |---|---|
-| `--show-candidates` | 候補出力のみ（基準は作らない） |
-| `--use-plan N` | 候補の **rank=N** を採用して基準を作成 |
-| `--unlock` | アンロック（新話題の吸収） |
-| `--baseline-from NAME` | 既存プロジェクトの基準を参照 |
-| `--project NAME` | 保存先のプロジェクト名（例：`1回目` / `2回目`） |
-| `--input_xlsx PATH` / `--input_csv PATH` | 入力データを指定 |
-| `--text_col NAME` / `--id_col NAME` | 列名を指定 |
-| `--k_min N` / `--k_max N` | 探索する k の下限・上限（同値で固定も可） |
-| `--unlock-q Q` | 新話題検出の距離分位点（0..1） |
-| `--unlock-add-k K` | 新規に追加する最大クラスタ数 |
-| `--embedding_model NAME` | 埋め込みモデル名（**現状は Ruri を公式サポート**） |
-| `--batch N` / `--max_len N` / `--pca_var R` / `--random_state S` / `--log_level LEVEL` | 実行パラメータ |
+| *(無指定)* | 既存の基準でロック適用。**初回は自動採用で基準作成** |
+| `--show-candidates` | 候補のみ出力（基準は作らない） |
+| `--use-plan N` | 候補の **rank=N** を採用して基準作成 |
+| `--unlock` | 柔軟適用：新話題を追加クラスタで吸収 |
+| `--input_csv PATH` / `--input_xlsx PATH` | 入力データの指定（いずれか一つ） |
+| `--text_col NAME` | テキスト列名（既定 `text`） |
+| `--project NAME` | 出力の保存先名（例：`1回目` / `2回目`） |
 
-> **注意**：`--sheet_name` は現行バージョンにはありません（Excel 読み込み時は既定シート or 自動判定）。必要であれば今後の改善候補です。
+> 補足：`--id_col` は任意（未指定なら内部付番）。
 
 ---
 
-## 📦 出力ファイル
-
-- `k_candidates.csv`：①候補評価（`rank=1` が最良）  
-- `k_candidates_stage2.csv`：②最終評価（`rank=1` が最良）と割当  
-- `結果スコア.csv`：各文のクラスタ割当、距離、IC（ICA②）などの指標  
-- `結果レポート.json`：採用 Plan、d・K、評価指標、実行条件  
-- `AI_命名依頼.md`：各クラスタの代表文（中心に近い順）を並べた命名用テンプレ
-
-> 詳細は `Manual.md` を参照してください。
-
----
-
-## 🧠 運用の目安（暫定）
-- **件数**：数百〜数千文規模で実用域（CPU環境）  
-- **時間**：データ量・環境に依存。初回（候補探索）は最も時間がかかります。  
-- **メモリ**：ベクトル長×件数に比例。不要列の削減、`--pca_var` の圧縮率調整で低減可能。  
-- **再現性**：`--random_state` を固定してください。微小差（±1e-5 程度）は浮動小数点丸めによるものです。
+## 補助オプション（その他）
+| オプション | 説明 |
+|---|---|
+| `--unlock-q Q` | 新話題検出の距離分位点（0<**Q**<1、既定 0.90） |
+| `--unlock-add-k K` | 追加クラスタの上限（既定 2） |
+| `--max_ic_cols N` | `結果スコア.csv` に出力する IC 列の上限 |
+| `--k_min N` / `--k_max N` | 候補探索の K 範囲 |
+| `--embedding_model NAME` | 既定：`cl-nagoya/ruri-v3-310m` |
+| `--batch N` / `--max_len N` | 埋め込みのバッチサイズ/最大長 |
+| `--pca_var R` | PCA の累積寄与（既定 0.90） |
+| `--random_state S` | 乱数シード |
+| `--log_level LEVEL` | ログレベル（INFO/DEBUG など） |
+| **日本語alias** | `--候補表示`（show-candidates）、`--採用プラン`（use-plan）、`--基準流用`（baseline-from 相当機能の環境用）、`--柔軟適用`（unlock）。※利便性向けの補助。 |
 
 ---
 
-## 🎓 学術背景：なぜ二段階 ICA なのか？
-
-高次元の埋め込み空間では、**相関が残ったままの軸**や**ノイズ成分**がクラスタリングを不安定にします。  
-PVM は以下の段階で **独立性の高い意味軸** を確保し、解釈しやすさを高めます。
-
-1. **PCA → ICA①**：相関とノイズを抑制し、一次の独立成分を抽出  
-2. **暫定クラスタリング**：大まかなトピック構造を取得  
-3. **ICA②（重心再分解）→ 最終クラスタリング**：クラスタ重心を再投影することで境界を明瞭化し、**軸の解釈可能性が高いクラスタ**に精緻化
-
-これにより、単一段階の ICA/クラスタリングよりも **安定・再現性・解釈性** のバランスが良好になります。特に、マーケティングテキストのように多義性が高いデータで効果を発揮します。
-
----
-
-## 🧑‍💻 作者 / 連絡先
-AI-NOSUKE（透明ペインター / Phantom Color Painter）  
-Powered by AI-KOTOBA
+## 出力ファイル
+代表的な成果物（プロジェクトごとに `PVMresult/` 以下へ保存）：
+- `結果スコア.csv` … 各候補/各クラスタのスコア・IC 指標
+- `結果レポート.json` … 実行情報・採用 Plan などのメタ
+- `AI_命名依頼.md` … クラスタ命名依頼テンプレ
+- `k_candidates.csv` … 候補一覧（一次）
+- `k_candidates_stage2.csv` … 二段階後の候補比較（TOP5 等）
+- `k_candidates_assignments.csv` … 割当情報のサマリ
+- `logs/` … 実行ログ
 
 ---
 
-## 📜 ライセンス & 商用利用
-- ライセンス：`LICENSE` を参照（PVM License v1.2）  
-- 商用ライセンスや価格・利用条件は **`License_FAQ.md`** を参照してください。
+## 運用の目安と再現性
+- **件数レンジ**：超少量（例：<30）では候補探索が粗くなります。十分な件数を推奨。  
+- **初回の自動採用**：無指定で走らせると自動採用で基準作成。意図を固定したい場合は `--use-plan N` を明示。  
+- **再現性**：`--random_state` の固定 + **baselineロック** 運用を推奨。  
+- **モデル依存**：埋め込みモデルを変えると軸解釈が変わることがあります（既定は Ruri）。
 
 ---
 
+## 学術背景（要点）
+- **ICA①**：潜在因子を独立化して「混じって見えにくい意味」を分離。  
+- **KMeans①**：大枠の群れ（トピック）を把握。  
+- **ICA②（重心再分解）**：クラスタ重心周りの軸を再構成して**輪郭を明確化**。  
+- **KMeans②**：最終クラスタを確定。  
+この **二段階 ICA** により、単段階よりも**解釈しやすい軸**と**安定したクラスタ**が得られやすく、マーケ活用（命名・要約・示唆抽出）で効きます。
 
+---
+
+## ライセンス / 作者
+- **License**：PVM License v1.2（詳細は `LICENSE` / `LICENSE_FAQ.md` を参照）
+- **Author**：AI-NOSUKE（透明ペインター / Phantom Color Painter）
