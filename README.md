@@ -1,10 +1,9 @@
-﻿# 📘 PVM (Phantom Vector Mapping)
+# 📘 PVM (Phantom Vector Mapping)
 [![Python](https://img.shields.io/badge/python-3.11%2B-informational)](#)
 ![License](https://img.shields.io/badge/license-PVM%20v1.2-blue)
 [![Last commit](https://img.shields.io/github/last-commit/AI-NOSUKE/PVM)](https://github.com/AI-NOSUKE/PVM/commits/main)
 [![Release](https://img.shields.io/github/v/release/AI-NOSUKE/PVM?display_name=tag&sort=semver)](https://github.com/AI-NOSUKE/PVM/releases)
 [![CI](https://github.com/AI-NOSUKE/PVM/actions/workflows/ci.yml/badge.svg)](https://github.com/AI-NOSUKE/PVM/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/AI-NOSUKE/PVM?display_name=tag&sort=semver)](https://github.com/AI-NOSUKE/PVM/releases)
 
 PVM は、テキストデータを **PCA → ICA → 暫定クラスタ → ICA（重心再分解） → 最終クラスタ** の二段階アプローチで解析する Python ツールです。  
 マーケティングリサーチや文章解析で、曖昧で多義的なテキスト集合から**安定して解釈しやすいクラスタ**を得ることを目的としています。
