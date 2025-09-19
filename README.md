@@ -2,6 +2,10 @@
 **二段階 ICA による日本語テキストクラスタリングエンジン**  
 PCA → ICA① → KMeans → ICA②（セントロイド再分解）→ KMeans の二段階アプローチで、**解釈しやすく安定**したクラスタを作るための研究・実務向けツール。
 
+## 🔒 セキュアでローカル完結
+このPVM（Phantom Vector Mapping）のコードは、**すべての処理がローカルで完結する**設計です。そのため、**テキストデータや個人情報が外部サーバーに送信されることはありません。** 機密性の高いドキュメントや、研究・業務用途での使用にも安心してご利用いただけます。
+
+
 ![python](https://img.shields.io/badge/python-3.11%2B-blue)
 ![license](https://img.shields.io/badge/License-PVM%20v1.2-green)
 ![release](https://img.shields.io/github/v/release/AI-NOSUKE/PVM?color=orange)
