@@ -186,7 +186,7 @@ INFO PVM: locked apply done → results written to PVMresult/結果スコア.csv
 
 - `結果スコア.csv` … 各候補/各クラスタのスコア・IC 指標  
 - `結果レポート.json` … 実行情報・採用 Plan などのメタ  
-- `AI_命名依頼.md` … クラスタ命名依頼テンプレ  
+- `AI_命名依頼.md` … クラスタ命名依頼テンプレ※AIにクラスタ解釈を依頼する場合に使用  
 - `k_candidates.csv` … 候補一覧（一次）  
 - `k_candidates_stage2.csv` … 二段階後の候補比較（TOP5 等）  
 - `k_candidates_assignments.csv` … 割当情報のサマリ  
