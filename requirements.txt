@@ -1,7 +1,15 @@
-pandas==2.2.2
+# --- Core ---
 numpy==1.26.4
+pandas==2.2.2
 scikit-learn==1.5.1
+
+# --- Embedding (Ruri v3 系で必須) ---
 torch==2.4.0
 transformers==4.43.4
-joblib==1.4.2
+sentencepiece>=0.1.99
+protobuf<5
+
+# --- Utils / IO ---
+tqdm==4.66.4
 openpyxl==3.1.5
+joblib==1.4.2
