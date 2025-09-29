@@ -1,4 +1,4 @@
-﻿# PVM (Phantom Vector Mapping)
+# PVM (Phantom Vector Mapping)
 ![python](https://img.shields.io/badge/python-3.11%2B-blue)
 ![license](https://img.shields.io/badge/License-PVM%20v1.2-green)
 ![release](https://img.shields.io/github/v/release/AI-NOSUKE/PVM?color=orange)
@@ -50,8 +50,8 @@
 - [概要](#概要)
 - [インストール（ローカル）](#インストールローカル)
 - [クイックスタート](#クイックスタート)
-  - [① CIサンプル（必ず通る最小テスト）](#qs-ci)
-  - [② ローカル利用（最小コマンド）](#qs-local)
+  - [① CIサンプル（必ず通る最小テスト）](#①-ciサンプル必ず通る最小テスト)
+  - [② ローカル利用（最小コマンド）](#②-ローカル利用最小コマンド)
 - [主なオプション（基本）](#主なオプション基本)
 - [補助オプション（その他）](#補助オプションその他)
 - [出力ファイル](#出力ファイル)
@@ -90,7 +90,6 @@ pip install -r requirements.txt
 
 ## クイックスタート
 
-<a id="qs-ci"></a>
 ### ① CIサンプル（必ず通る最小テスト）
 
 固定データ（`examples/sample_texts.csv`）で検証しています。
@@ -107,12 +106,13 @@ python PVM.py --input_csv examples/sample_texts.csv
 
 # 柔軟適用（新話題の吸収）
 python PVM.py --input_csv examples/sample_texts.csv --unlock
+```
 
-> 補足：アンロックは既存基準に投影し、基準から遠い集合だけを外れ値とみなして
-> その中で最大 `--unlock-add-k` 個まで新クラスタを追加します。
+補足：アンロックは既存基準に投影し、基準から遠い集合だけを外れ値とみなして  
+その中で最大 `--unlock-add-k` 個まで新クラスタを追加します。
 
+---
 
-<a id="qs-local"></a>
 ### ② ローカル利用（最小コマンド）
 
 入力ファイル未指定時は自動検出されます（`入力.xlsx` / `入力.csv` / 最新のExcel・CSVファイル）。  
@@ -131,6 +131,7 @@ python PVM.py
 # 柔軟適用（アンロック）
 python PVM.py --unlock
 ```
+
 👉 サンプルCSVはこちら：[examples/sample_texts.csv](examples/sample_texts.csv)
 
 <details>
