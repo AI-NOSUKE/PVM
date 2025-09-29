@@ -84,7 +84,6 @@ python -m venv .venv
 # source .venv/bin/activate # macOS/Linux
 pip install -r requirements.txt
 ```
-
 - Python 3.11+ 推奨。初回は埋め込みモデル取得で少し時間がかかることがあります。
 
 ---
@@ -132,7 +131,6 @@ python PVM.py
 # 柔軟適用（アンロック）
 python PVM.py --unlock
 ```
-
 👉 サンプルCSVはこちら：[examples/sample_texts.csv](examples/sample_texts.csv)
 
 <details>
