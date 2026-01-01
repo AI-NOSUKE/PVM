@@ -680,7 +680,7 @@ def main():
 
     ap.add_argument("--embedding_model", type=str, default="cl-nagoya/ruri-v3-310m")
     ap.add_argument("--batch", type=int, default=16)
-    ap.add_argument("--max_len", type=int, default=384)
+    ap.add_argument("--max_len", type=int, default=512)
 
     ap.add_argument("--pca_var", type=float, default=0.90)
     ap.add_argument("--k_min", type=int, default=3)
