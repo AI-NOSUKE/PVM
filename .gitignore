@@ -27,3 +27,7 @@ dist/
 *.pt
 *.onnx
 PVMresult/
+
+# Windows
+desktop.ini
+
