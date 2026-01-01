@@ -177,7 +177,7 @@ INFO PVM: locked apply done → results written to PVMresult/結果スコア.csv
 | `--max_ic_cols N` | `結果スコア.csv` に出力する IC 列の上限 | 全て |
 | `--k_min N` / `--k_max N` | 候補探索の K 範囲 | 3 / 12 |
 | `--embedding_model NAME` | 埋め込みモデル | cl-nagoya/ruri-v3-310m |
-| `--batch N` / `--max_len N` | 埋め込みのバッチサイズ/最大長 | 16 / 384 |
+| `--batch N` / `--max_len N` | 埋め込みのバッチサイズ/最大長 | 16 / 512 |
 | `--pca_var R` | PCA の累積寄与率 | 0.90 |
 | `--random_state S` | 乱数シード | 42 |
 | `--log_level LEVEL` | ログレベル（INFO/DEBUG など） | INFO |
