@@ -1,4 +1,4 @@
-# PVM (Phantom Vector Mapping)
+﻿# PVM (Phantom Vector Mapping)
 ![python](https://img.shields.io/badge/python-3.11%2B-blue)
 ![license](https://img.shields.io/badge/License-PVM%20v1.2-green)
 ![release](https://img.shields.io/github/v/release/AI-NOSUKE/PVM?color=orange)
@@ -23,8 +23,9 @@
 
 > ※ ベクトル化（embedding）はPVM手法そのものには含まれませんが、処理の前提ステップとして 0. に記載しています。
 
-👉 サンプルレポート（ももクロ関連コメントの分類テスト例）はこちら: [docs/momoclo_report.md](docs/momoclo_report.md)
-
+👉 サンプルレポート（PVMによるWebテキスト分類と、クラスタロックを用いた比較分析の実例）  
+- ももクロ関連コメント分析（前編）: [docs/momoclo_report.md](docs/momoclo_report.md)  
+- メンバー別内訳分析（クラスタロック）: [docs/momoclo_memberBreakDownreport.md](docs/momoclo_memberBreakDownreport.md)
 
 ## ⚙️ この実装（ローカル動作＆日本語特化）
 
@@ -224,3 +225,4 @@ INFO PVM: locked apply done → results written to PVMresult/結果スコア.csv
 
 - **License**：PVM License v1.2（詳細は `LICENSE` / `LICENSE_FAQ.md` を参照）
 - **Author**：AI-NOSUKE（透明ペインター / Phantom Color Painter）
+
