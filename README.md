@@ -24,8 +24,8 @@
 > ※ ベクトル化（embedding）はPVM手法そのものには含まれませんが、処理の前提ステップとして 0. に記載しています。
 
 👉 サンプルレポート（PVMによるWebテキスト分類と、クラスタロックを用いた比較分析の実例）  
-- ももクロ関連コメント分析（前編）: [docs/momoclo_report.md](docs/momoclo_report.md)  
-- メンバー別内訳分析（クラスタロック）: [docs/momoclo_memberBreakDownreport.md](docs/momoclo_memberBreakDownreport.md)
+- ももクロ関連コメント分析: [docs/momoclo_report.md](docs/momoclo_report.md)  
+- メンバー別比較分析（クラスタロック活用）: [docs/momoclo_memberBreakDownreport.md](docs/momoclo_memberBreakDownreport.md)
 
 ## ⚙️ この実装（ローカル動作＆日本語特化）
 
