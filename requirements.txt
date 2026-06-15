@@ -6,6 +6,7 @@ scikit-learn==1.5.1
 # --- Embedding (Ruri v3 系で必須) ---
 torch==2.4.0
 transformers==4.43.4
+huggingface_hub>=0.24.0
 sentencepiece>=0.1.99
 protobuf<5
 
@@ -13,3 +14,7 @@ protobuf<5
 tqdm==4.66.4
 openpyxl==3.1.5
 joblib==1.4.2
+
+# --- Optional ---
+# Hugging Face の Xet Storage 警告を抑えたい/初回DLを改善したい場合は手元で追加導入してください。
+# pip install hf_xet

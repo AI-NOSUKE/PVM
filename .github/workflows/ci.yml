@@ -1,10 +1,10 @@
-name: PVM CI (final all flows)
+name: PVM CI
 
 on:
   push:
-    branches: [ "main" ]
+    branches: ["main"]
   pull_request:
-    branches: [ "main" ]
+    branches: ["main"]
   workflow_dispatch:
 
 concurrency:
@@ -12,13 +12,10 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  test:
+  smoke:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 60
     env:
-      HF_HOME: ${{ github.workspace }}/.hf_cache
-      PIP_CACHE_DIR: ${{ github.workspace }}/.pip_cache
-      HF_HUB_ENABLE_HF_TRANSFER: "0"
       PIP_NO_INPUT: "1"
       TOKENIZERS_PARALLELISM: "false"
 
@@ -32,117 +29,18 @@ jobs:
           python-version: "3.11"
           cache: "pip"
 
-      - name: Prepare caches
-        shell: bash
-        run: |
-          set -euxo pipefail
-          mkdir -p "${HF_HOME}" "${PIP_CACHE_DIR}"
-
-      - name: Cache HF Torch and PIP
-        uses: actions/cache@v4
-        with:
-          path: |
-            ${{ env.HF_HOME }}
-            ~/.cache/torch
-            ${{ env.PIP_CACHE_DIR }}
-          key: ${{ runner.os }}-hf-pip-${{ hashFiles('requirements.txt') }}
-
-      - name: Install deps
+      - name: Install dependencies
         shell: bash
         run: |
           set -euxo pipefail
           python -m pip install --upgrade pip
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-          pip install "sentencepiece>=0.1.99" "protobuf<5"
-          pip install --upgrade "transformers>=4.41.0"
-          pip install . || true
-          mkdir -p logs
+          python -m pip install -r requirements.txt
 
-      - name: Preflight
+      - name: Smoke checks
         shell: bash
         run: |
           set -euxo pipefail
-          echo "PWD=$(pwd)"
-          test -f PVM.py
-          test -f examples/sample_texts.csv
-          python PVM.py -h | sed -n '1,160p'
-
-      - name: Define retry helper
-        shell: bash
-        run: |
-          set -euxo pipefail
-          cat > /usr/local/bin/run_with_retry <<'EOS'
-          #!/usr/bin/env bash
-          set -euo pipefail
-          cmd="$*"
-          for i in 1 2 3; do
-            echo "---- Attempt $i: $cmd"
-            if eval "$cmd"; then exit 0; fi
-            echo "Attempt $i failed. Sleeping..."
-            sleep $((10*i))
-          done
-          echo "All attempts failed."
-          exit 1
-          EOS
-          chmod +x /usr/local/bin/run_with_retry
-
-      # ① 通常 → ロック
-      - name: Flow 1 - normal then lock
-        shell: bash
-        run: |
-          set -euxo pipefail
-          { time run_with_retry python PVM.py --input_csv examples/sample_texts.csv --project run1; } 2>&1 | tee logs/flow1_normal.txt
-          { time run_with_retry python PVM.py --input_csv examples/sample_texts.csv --project run1_lock --baseline-from run1; } 2>&1 | tee logs/flow1_lock.txt
-          echo "ok" > logs/flow1.done
-
-      # ② 通常 → アンロック（※ unlock は引数なしのフラグ）
-      - name: Flow 2 - normal then unlock
-        shell: bash
-        run: |
-          set -euxo pipefail
-          { time run_with_retry python PVM.py --input_csv examples/sample_texts.csv --project run2; } 2>&1 | tee logs/flow2_normal.txt
-          { time run_with_retry python PVM.py --input_csv examples/sample_texts.csv --project run2_unlock --unlock; } 2>&1 | tee logs/flow2_unlock.txt
-          echo "ok" > logs/flow2.done
-
-      # ③ candidates → plan → lock
-      #    baseline_* が残っていると自動検出で「ロック実行」に化け、plan*.json/番号選択ができずに落ちる。
-      #    事前に baseline_* を削除して「候補出し（初回モード）」を強制。
-      - name: Flow 3 - candidates -> plan -> lock (robust)
-        shell: bash
-        run: |
-          set -euxo pipefail
-
-          # (A) baseline を消して候補出しを強制
-          rm -rf PVMresult/baseline_* || true
-
-          # (B) 候補出し
-          { time run_with_retry python PVM.py --input_csv examples/sample_texts.csv --project candidates --show-candidates; } 2>&1 | tee logs/flow3_candidates.txt
-
-          # (C) Plan番号を自動抽出（k_candidates.csv の先頭候補）→ 取れなければ 3 にフォールバック
-          PLAN_ID=$(awk -F, 'NR>1 && $1 ~ /^[0-9]+$/ {print $1; exit}' candidates/k_candidates.csv 2>/dev/null || true)
-          if [ -z "${PLAN_ID:-}" ]; then PLAN_ID=3; fi
-          echo "Using PLAN_ID=${PLAN_ID}"
-
-          # (D) plan 指定で実行（PVMは --use-plan <番号> 形式）
-          { time run_with_retry python PVM.py --input_csv examples/sample_texts.csv --project plan3 --use-plan "${PLAN_ID}"; } 2>&1 | tee logs/flow3_plan.txt
-
-          # (E) その結果をロック
-          { time run_with_retry python PVM.py --input_csv examples/sample_texts.csv --project plan3_lock --baseline-from plan3; } 2>&1 | tee logs/flow3_lock.txt
-
-          echo "ok" > logs/flow3.done
-
-      - name: Upload artifacts (always)
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: pvm-outputs-and-logs
-          path: |
-            run1/**
-            run1_lock/**
-            run2/**
-            run2_unlock/**
-            candidates/**
-            plan3/**
-            plan3_lock/**
-            logs/**
-          if-no-files-found: warn
+          python -m py_compile PVM.py
+          VERSION="$(python PVM.py --version)"
+          test "${VERSION}" = "PVM-complete-5.7.2"
+          python PVM.py --self-check

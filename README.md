@@ -1,4 +1,4 @@
-﻿# PVM (Phantom Vector Mapping)
+# PVM (Phantom Vector Mapping)
 ![python](https://img.shields.io/badge/python-3.11%2B-blue)
 ![license](https://img.shields.io/badge/License-PVM%20v1.2-green)
 ![release](https://img.shields.io/github/v/release/AI-NOSUKE/PVM?color=orange)
@@ -33,14 +33,16 @@
 使用している日本語埋め込みモデルは `cl-nagoya/ruri-v3-310m`（Hugging Face Transformersベース）です。
 
 このコードは、**初回実行時にモデルをダウンロード**する以外は、**完全にローカル環境で実行可能**です。  
-すべての処理（埋め込み・次元圧縮・クラスタリング・命名補助など）はローカルで行われ、**外部APIや通信は不要**です。
+すべての処理（埋め込み・次元圧縮・クラスタリング・解釈補助など）はローカルで行われ、**外部APIや通信は不要**です。
+
+Ruri v3 のクラスタリング用途に合わせ、既定では各テキストに `トピック: ` prefix を内部的に付与して embedding します。入力ファイルや出力CSV、AI向けパケットの原文には prefix は混ざりません。
 
 
 ## 🔒 セキュアでローカル完結（この実装の特長）
 
 - テキストデータや個人情報を**外部サーバーへ送信することは一切ありません**  
 - **外部APIキー不要**、オフライン環境でも再現可能  
-- 初回のみモデル（約440MB）をインターネット経由で取得しますが、以降は**すべてローカル処理**
+- 初回のみモデル（1GB超）をインターネット経由で取得しますが、以降は**ローカルキャッシュを使用**
 
 > このため、**実務データ・研究データ・社内資料など機密性の高いデータ**でも、セキュアに扱うことができます。
 
@@ -71,7 +73,7 @@
   - **再現配慮**：乱数シード・baselineロック・ログ出力で運用を安定化。
 
 > 💡初回を **無指定で実行**すると、自動でベスト Plan が採用され基準が作成されます。  
-> 　 意図を明示したい場合は `--show-candidates → --use-plan N` を推奨。
+> 　 意図を明示したい場合は `--show-candidates` → `--use-plan N` も利用できます。
 
 ---
 
@@ -96,17 +98,20 @@ pip install -r requirements.txt
 固定データ（`examples/sample_texts.csv`）で検証しています。
 
 ```powershell
-# 候補探索
-python PVM.py --input_csv examples/sample_texts.csv --show-candidates
-
-# Plan採用（例：rank=1）
-python PVM.py --input_csv examples/sample_texts.csv --use-plan 1
+# 初回：自動で候補探索し、ベストPlanを採用してbaselineを作成
+python PVM.py --input_csv examples/sample_texts.csv
 
 # 2回目以降はロック適用
 python PVM.py --input_csv examples/sample_texts.csv
 
 # 柔軟適用（新話題の吸収）
 python PVM.py --input_csv examples/sample_texts.csv --unlock
+
+# 候補だけ確認したい場合
+python PVM.py --input_csv examples/sample_texts.csv --show-candidates
+
+# 候補から明示採用したい場合
+python PVM.py --input_csv examples/sample_texts.csv --use-plan 1
 ```
 
 補足：アンロックは既存基準に投影し、基準から遠い集合だけを外れ値とみなして  
@@ -120,17 +125,20 @@ python PVM.py --input_csv examples/sample_texts.csv --unlock
 あなたのCSVのテキスト列名が **`text`** なら `--text_col` も不要です。
 
 ```powershell
-# 候補探索
-python PVM.py --show-candidates
-
-# Plan採用（例：rank=1）
-python PVM.py --use-plan 1
+# 初回：自動で候補探索し、ベストPlanを採用してbaselineを作成
+python PVM.py
 
 # 2回目以降（ロック適用）
 python PVM.py
 
 # 柔軟適用（アンロック）
 python PVM.py --unlock
+
+# 候補だけ確認したい場合
+python PVM.py --show-candidates
+
+# 候補から明示採用したい場合
+python PVM.py --use-plan 1
 ```
 
 👉 サンプルCSVはこちら：[examples/sample_texts.csv](examples/sample_texts.csv)
@@ -139,11 +147,13 @@ python PVM.py --unlock
 <summary><b>参考: 実行ログの例（クリックで展開）</b></summary>
 
 ```text
-INFO PVM: embedding model = cl-nagoya/ruri-v3-310m
-INFO PVM: candidates search k in [3..12], seed=42
-INFO PVM: stage-2 compare TOP5 → results written to PVMresult/k_candidates_stage2.csv
-INFO PVM: global plan rank=1 selected → baseline saved to PVMresult/baseline_1回目/
-INFO PVM: locked apply done → results written to PVMresult/結果スコア.csv
+22:47:00 [INFO] [OCHIBI] columns: text_col="text"
+22:47:00 [INFO] [OCHIBI] データ件数: 100
+22:50:05 [INFO] [OCHIBI] Embedding開始: total=100, batch=8, max_len=8192, prefix='トピック: ', device=cpu
+22:51:06 [INFO] [OCHIBI] 初回（自動基準作成）: ベスト Plan を自動採用して baseline を作成します。
+23:34:32 [INFO] [OCHIBI] スコア出力: PVMresult/run_プロジェクト名_01/結果スコア.csv
+23:34:32 [INFO] [OCHIBI] AI向け依頼を出力: PVMresult/run_プロジェクト名_01/AI_解釈依頼.md
+23:34:32 [INFO] [OCHIBI] baseline 作成/更新: PVMresult/baseline_プロジェクト名 history/v001
 ```
 </details>
 
@@ -172,12 +182,13 @@ INFO PVM: locked apply done → results written to PVMresult/結果スコア.csv
 | オプション | 説明 | デフォルト値 |
 |---|---|---|
 | `--id_col NAME` | ID列名（任意） | 内部で自動付番 |
-| `--unlock-q Q` | 新話題検出の距離分位点（0<Q<1） | 0.90 |
+| `--unlock-q Q` | 新話題検出の距離分位点（0<Q<1） | 0.95 |
 | `--unlock-add-k K` | 追加クラスタの上限 | 2 |
 | `--max_ic_cols N` | `結果スコア.csv` に出力する IC 列の上限 | 全て |
 | `--k_min N` / `--k_max N` | 候補探索の K 範囲 | 3 / 12 |
 | `--embedding_model NAME` | 埋め込みモデル | cl-nagoya/ruri-v3-310m |
-| `--batch N` / `--max_len N` | 埋め込みのバッチサイズ/最大長 | 16 / 512 |
+| `--embedding-prefix TEXT` | embedding前に付けるprefix。通常変更不要。`none` で空prefix | `トピック: ` |
+| `--batch N` / `--max_len N` | 埋め込みのバッチサイズ/最大長 | 8 / 8192 |
 | `--pca_var R` | PCA の累積寄与率 | 0.90 |
 | `--random_state S` | 乱数シード | 42 |
 | `--log_level LEVEL` | ログレベル（INFO/DEBUG など） | INFO |
@@ -191,7 +202,8 @@ INFO PVM: locked apply done → results written to PVMresult/結果スコア.csv
 
 - `結果スコア.csv` … 各テキストのクラスタ割当・距離・IC 指標  
 - `結果レポート.json` … 実行情報・採用 Plan などのメタ情報  
-- `AI_命名依頼.md` … クラスタ命名依頼テンプレ（代表文リスト付き）  
+- `AI_解釈依頼.md` … クラスタ解釈・命名をAIに依頼するための代表文パケット
+- `AI_クラスタ一覧.csv` … クラスタごとの要約一覧
 - `k_candidates.csv` … 全候補一覧（d × K の組み合わせ評価）  
 - `k_candidates_stage2.csv` … 二段階後の候補比較（d* 固定で K のみ変更した TOP5）  
 - `k_candidates_assignments.csv` … 各候補での全テキストの割当情報  
@@ -204,8 +216,8 @@ INFO PVM: locked apply done → results written to PVMresult/結果スコア.csv
 - **データ件数**：最低3件以上必要、30件以下では候補探索が粗くなります。十分な件数（100件以上）を推奨。  
 - **初回の自動採用**：無指定で走らせると自動採用で基準作成。意図を固定したい場合は `--show-candidates` → `--use-plan N` を明示。  
 - **再現性**：`--random_state` の固定 + **baselineロック** 運用を推奨。  
-- **baselineの優先度**：`--baseline-from` ＞ 現在プロジェクトの baseline ＞ワークスペース内の最新 baseline_* が自動的に選択されます。
-- **モデル依存**：埋め込みモデルを変えると軸解釈が変わります。一貫性のため同一モデルでの運用を推奨。  
+- **baselineの優先度**：`--baseline-from` ＞ 現在プロジェクトの baseline ＞ フォルダ内に baseline が1系列だけならそれを自動採用。複数ある場合は誤適用を避けるため明示指定が必要です。
+- **モデル依存**：埋め込みモデル、embedding prefix、max_len を変えると軸解釈が変わります。一貫性のため同一設定での運用を推奨。
 - **プロジェクト分離**：異なる分析は `--project` で分けることで、基準の混在を防げます。
 
 ---
@@ -225,4 +237,3 @@ INFO PVM: locked apply done → results written to PVMresult/結果スコア.csv
 
 - **License**：PVM License v1.2（詳細は `LICENSE` / `LICENSE_FAQ.md` を参照）
 - **Author**：AI-NOSUKE（透明ペインター / Phantom Color Painter）
-
