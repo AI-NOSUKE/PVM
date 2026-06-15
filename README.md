@@ -1,7 +1,6 @@
 # PVM (Phantom Vector Mapping)
 ![python](https://img.shields.io/badge/python-3.11%2B-blue)
 ![license](https://img.shields.io/badge/License-PVM%20v1.2-green)
-![release](https://img.shields.io/github/v/release/AI-NOSUKE/PVM?color=orange)
 ![ci](https://github.com/AI-NOSUKE/PVM/actions/workflows/ci.yml/badge.svg)
 
 ## 🔰 概要（PVMとは）
@@ -56,7 +55,7 @@ Ruri v3 のクラスタリング用途に合わせ、既定では各テキスト
 - [概要](#概要)
 - [インストール（ローカル）](#インストールローカル)
 - [クイックスタート](#クイックスタート)
-  - [① CIサンプル（必ず通る最小テスト）](#①-ciサンプル必ず通る最小テスト)
+  - [① 動作確認サンプル](#①-動作確認サンプル)
   - [② ローカル利用（最小コマンド）](#②-ローカル利用最小コマンド)
 - [主なオプション（基本）](#主なオプション基本)
 - [補助オプション（その他）](#補助オプションその他)
@@ -96,11 +95,12 @@ pip install -r requirements.txt
 
 ## クイックスタート
 
-### ① CIサンプル（必ず通る最小テスト）
+### ① 動作確認サンプル
 
-固定データ（`examples/sample_texts.csv`）で検証しています。
+CIでは `py_compile` / `--version` / `--self-check` を検証しています。<br>
+以下は、同梱サンプル `examples/sample_texts.csv` を使ってローカルで実行できる最小例です。
 
-```powershell
+```bash
 # 初回：自動で候補探索し、ベストPlanを採用してbaselineを作成
 python PVM.py --input_csv examples/sample_texts.csv
 
@@ -115,6 +115,13 @@ python PVM.py --input_csv examples/sample_texts.csv --show-candidates
 
 # 候補から明示採用したい場合
 python PVM.py --input_csv examples/sample_texts.csv --use-plan 1
+```
+
+インストール後の軽量チェック（埋め込みモデル不要）:
+
+```bash
+python PVM.py --version
+python PVM.py --self-check
 ```
 
 補足：アンロックは既存基準に投影し、基準から遠い集合だけを外れ値とみなして  
@@ -147,7 +154,7 @@ python PVM.py --use-plan 1
 👉 サンプルCSVはこちら：[examples/sample_texts.csv](examples/sample_texts.csv)
 
 <details>
-<summary><b>参考: 実行ログの例（クリックで展開）</b></summary>
+<summary><b>参考: 別データでの実行ログ例（クリックで展開）</b></summary>
 
 ```text
 22:47:00 [INFO] [OCHIBI] columns: text_col="text"
@@ -156,7 +163,7 @@ python PVM.py --use-plan 1
 22:51:06 [INFO] [OCHIBI] 初回（自動基準作成）: ベスト Plan を自動採用して baseline を作成します。
 23:34:32 [INFO] [OCHIBI] スコア出力: PVMresult/run_プロジェクト名_01/結果スコア.csv
 23:34:32 [INFO] [OCHIBI] AI向け依頼を出力: PVMresult/run_プロジェクト名_01/AI_解釈依頼.md
-23:34:32 [INFO] [OCHIBI] baseline 作成/更新: PVMresult/baseline_プロジェクト名 history/v001
+23:34:32 [INFO] [OCHIBI] baseline 作成/更新: PVMresult/baseline_プロジェクト名/history/v001
 ```
 </details>
 
@@ -187,6 +194,9 @@ python PVM.py --use-plan 1
 | `--id_col NAME` | ID列名（任意） | 内部で自動付番 |
 | `--unlock-q Q` | 新話題検出の距離分位点（0<Q<1） | 0.95 |
 | `--unlock-add-k K` | 追加クラスタの上限 | 2 |
+| `--unlock-min-points N` | unlock時に新クラスタ候補として扱う最小件数 | 8 |
+| `--baseline-version vXXX` | lock / unlock 時に使用する baseline version を明示 | 最新版 |
+| `--restore-version vXXX` | 指定 version を復元保存して終了 | - |
 | `--max_ic_cols N` | `結果スコア.csv` に出力する IC 列の上限 | 全て |
 | `--k_min N` / `--k_max N` | 候補探索の K 範囲 | 3 / 12 |
 | `--embedding_model NAME` | 埋め込みモデル | cl-nagoya/ruri-v3-310m |
@@ -208,7 +218,7 @@ python PVM.py --use-plan 1
 - `AI_解釈依頼.md` … クラスタ解釈・命名をAIに依頼するための代表文パケット
 - `AI_クラスタ一覧.csv` … クラスタごとの要約一覧
 - `k_candidates.csv` … 全候補一覧（d × K の組み合わせ評価）  
-- `k_candidates_stage2.csv` … 二段階後の候補比較（d* 固定で K のみ変更した TOP5）  
+- `k_candidates_stage2.csv` … 候補探索で上位になったPlan TOP5の比較（ica1_dim / ic2_dim / k / 各指標）
 - `k_candidates_assignments.csv` … 各候補での全テキストの割当情報  
 - `baseline_プロジェクト名/` … 基準情報（history でバージョン管理）
 

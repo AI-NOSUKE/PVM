@@ -2709,7 +2709,7 @@ def _restore_only(result_root: Path, args: argparse.Namespace) -> None:
         "source_baseline": f"{source_project}:{src_ver}",
         "used_version": new_ver,
     })
-    log.info("baseline 復元: %s history/%s", baseline_root(result_root, target_project), new_ver)
+    log.info("baseline 復元: %s", history_root(result_root, target_project) / new_ver)
 
 
 def main() -> None:
@@ -2909,7 +2909,7 @@ def main() -> None:
             analysis_info=analysis_info,
         )
         emit_run_summary(meta.mode, analysis_info)
-        log.info("baseline 作成/更新: %s history/%s", baseline_root(result_root, project), ver)
+        log.info("baseline 作成/更新: %s", history_root(result_root, project) / ver)
         return
 
     # lock / unlock require existing baseline
@@ -3014,7 +3014,7 @@ def main() -> None:
         })
         export_ai_prompt_pack(run_dir, df, effective_text_col, Xfinal, unlock_res["labels"], unlock_res["dists"], unlock_res["all_centroids"], int(new_meta.protected_cluster_count), "unlock", analysis_info=analysis_info)
         emit_run_summary("unlock", analysis_info)
-        log.info("unlock baseline 更新: %s history/%s", baseline_root(result_root, save_project), ver2)
+        log.info("unlock baseline 更新: %s", history_root(result_root, save_project) / ver2)
         return
 
     # normal lock
