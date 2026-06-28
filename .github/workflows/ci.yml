@@ -42,5 +42,5 @@ jobs:
           set -euxo pipefail
           python -m py_compile PVM.py
           VERSION="$(python PVM.py --version)"
-          test "${VERSION}" = "PVM-complete-5.7.2"
+          test "${VERSION}" = "PVM-standard-6.0.0"
           python PVM.py --self-check
