@@ -1,10 +1,12 @@
 # PVM Manual
 
 ## 1. 概要
-高次元のテキスト埋め込みを **二段階 ICA + spherical k-means** で整理します。
+高次元のテキスト埋め込みを **PCA → ICA① → Cluster① → Centroid Projection → Cluster②** で整理します。
 初回は候補（k と ICA 次元の組み合わせ）を探索し、ベストPlanを自動採用してbaselineを作成します。
 **rank=1 が最良**で、`--use-plan N` の **N にはこの rank 値**を渡します。
 2回目以降は既存の基準に基づくロック実行がデフォルトです。`--unlock` で新話題のみを吸収して基準を拡張できます。
+
+PVM Standard 6.0.0 では内部変換を centroid projection 版に刷新しました。操作方法は従来とほぼ同じですが、旧baselineとは互換性がありません。既存プロジェクトは6.0.0でbaselineを再作成してください。
 
 ## 2. 入力データ
 - 既定設定で `python PVM.py` を実行可能（必要に応じてオプションで上書き）。
@@ -67,7 +69,7 @@ python PVM.py --unlock   # アンロック（新話題のみ追加）
 - `k_candidates.csv`：全候補評価（rank=1 が最良）
 - `k_candidates_stage2.csv`：候補探索で上位になったPlan TOP5の比較（ica1_dim / ic2_dim / k / 各指標）
 - `k_candidates_assignments.csv`：各候補での全テキストの割当情報
-- `結果スコア.csv`：各文のクラスタ割当、距離、IC（ICA②）などの指標
+- `結果スコア.csv`：各文のクラスタ割当、距離、IC/centroid projection成分などの指標
 - `結果レポート.json`：採用 Plan、d・K、評価指標、実行条件
 - `AI_解釈依頼.md`：クラスタ解釈・命名をAIに依頼するための代表文パケット
 - `AI_クラスタ一覧.csv`：クラスタごとの要約一覧

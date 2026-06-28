@@ -19,7 +19,7 @@ Important behavior
 ------------------
 - embedding は Ruri v3 のクラスタリング用途に合わせ、既定で「トピック: 」prefix を内部付与する
 - 入力CSV/Excelや出力CSV/AIパケットの原文には prefix を混ぜない
-- clustering は最後まで cosine / spherical k-means で統一する
+- Full PVM は PCA→ICA①→クラスタ①→centroid projection→クラスタ②で実行する
 - lock は baseline を再学習せず固定適用する
 - unlock は既存点を再編せず、新規話題候補だけを add-only で追加判定する
 - 次回 lock でも、まず base gate を見てから extra cluster を評価する二段階割当を行う
@@ -33,7 +33,7 @@ Current defaults
 - batch: 8
 """
 
-__version__ = "5.7.2"
+__version__ = "6.0.0"
 
 import argparse
 import json
@@ -87,9 +87,9 @@ except ImportError:  # pragma: no cover
         def close(self):
             pass
 
-SCHEMA_VERSION = "1.1"
-LEGACY_SCHEMA_VERSION = "1.0"
-SCRIPT_VERSION = "PVM-complete-5.7.2"
+SCHEMA_VERSION = "2.0"
+LEGACY_SCHEMA_VERSION = "1.1"
+SCRIPT_VERSION = "PVM-standard-6.0.0"
 DEFAULT_EMBEDDING_PREFIX = "トピック: "
 DEFAULT_MAX_LEN = 8192
 DEFAULT_BATCH = 8
@@ -473,7 +473,7 @@ class TransformBundle:
     ica2_mean: np.ndarray
     ica2_n_components: int
     embed_dim: int
-    transform_mode: str = "full_pvm"
+    transform_mode: str = "full_original_pvm"
     ica1_status: str = "converged"
     ica2_status: str = "converged"
     final_n_components: int = 0
@@ -502,7 +502,7 @@ class BaselineMeta:
     environment: Dict[str, Any]
     chosen_plan: Optional[Dict[str, Any]] = None
     source_baseline: Optional[str] = None
-    transform_mode: str = "full_pvm"
+    transform_mode: str = "full_original_pvm"
     ica1_status: str = "na"
     ica2_status: str = "na"
     fallback_level: int = 0
@@ -710,6 +710,71 @@ def get_stage1_result(
     return out
 
 
+def between_class_projection(
+    Xi1: np.ndarray,
+    labels: np.ndarray,
+    svd_tol_ratio: float = 1e-6,
+) -> Tuple[np.ndarray, np.ndarray, int, np.ndarray]:
+    """クラスタ①の重心が張る between-class 方向を返す。
+
+    Full / Original PVM の中核:
+        PCA -> ICA① -> cluster① -> centroid projection -> cluster②
+
+    ここでは「セントロイドに ICA をかける」のではなく、
+    クラスタ①の重心差が張る判別的な線形部分空間を SVD で作る。
+
+    数式:
+        μ   = Xi1 全体平均
+        μ_c = cluster c の平均
+        M_c = sqrt(n_c) * (μ_c - μ)
+        M^T M は between-class scatter に対応する。
+        M の右特異ベクトル Vt がクラスタ間方向 W。
+
+    rank は最大 k-1。これは k 個の重心が中心化後に張れる空間の上限。
+    """
+    Xi1 = np.asarray(Xi1, dtype=np.float32)
+    labels = np.asarray(labels, dtype=int)
+
+    if Xi1.ndim != 2:
+        raise RuntimeError("centroid projection failed: Xi1 must be 2D.")
+    if len(Xi1) != len(labels):
+        raise RuntimeError("centroid projection failed: Xi1 and labels length mismatch.")
+
+    classes = np.unique(labels)
+    if len(classes) < 2:
+        raise RuntimeError("centroid projection failed: fewer than 2 non-empty clusters.")
+
+    mu = Xi1.mean(axis=0).astype(np.float64)
+    rows: List[np.ndarray] = []
+    for c in classes:
+        idx = labels == c
+        n_c = int(idx.sum())
+        if n_c <= 0:
+            continue
+        mu_c = Xi1[idx].mean(axis=0).astype(np.float64)
+        rows.append(np.sqrt(n_c) * (mu_c - mu))
+
+    if len(rows) < 2:
+        raise RuntimeError("centroid projection failed: fewer than 2 centroid rows.")
+
+    M = np.vstack(rows)
+    try:
+        _, s, Vt = np.linalg.svd(M, full_matrices=False)
+    except LinAlgError as e:
+        raise RuntimeError(f"centroid projection SVD failed: {e}") from e
+
+    if s.size == 0 or (not np.isfinite(s).all()) or float(s[0]) <= 1e-12:
+        raise RuntimeError("centroid projection failed: degenerate between-class variance.")
+
+    tol = float(svd_tol_ratio) * float(s[0])
+    rank = int(np.sum(s > tol))
+    rank = min(rank, len(classes) - 1, Xi1.shape[1])
+    if rank < 1:
+        raise RuntimeError("centroid projection failed: rank is zero.")
+
+    W = Vt[:rank].astype(np.float32)
+    return W, mu.astype(np.float32), int(rank), s.astype(np.float32)
+
 def fit_transforms(
     X: np.ndarray,
     pca_var: float,
@@ -717,10 +782,32 @@ def fit_transforms(
     k: int,
     random_state: int,
     cache: Optional[Dict[Any, Any]] = None,
-    ica_retry_config: Optional[IcaRetryConfig] = None,
+    ica_retry_config: Optional[IcaRetryConfig] = None
 ) -> Tuple[TransformBundle, np.ndarray, Dict[str, Any]]:
+    """PVM変換をfitし、最終クラスタリング用の Xfinal を返す。
+
+    PVM Standard 6.0.0:
+        新規baselineの正式ルートは Full / Original PVM。
+
+            PCA
+            -> ICA①
+            -> cluster① in ICA① space
+            -> centroid projection / between-class projection
+            -> Xfinal
+            -> cluster② は get_pipeline_result() 側の spherical_kmeans で実行
+
+    旧 full_pvm = 全文書ICA②(k-1) はこの版ではサポートしない。
+    この版以降は Full / Original PVM をPVMの正式仕様として扱う。
+    """
     cache = cache if cache is not None else {}
-    stage1 = get_stage1_result(X, pca_var=pca_var, ica1_dim=ica1_dim, random_state=random_state, cache=cache, ica_retry_config=ica_retry_config)
+    stage1 = get_stage1_result(
+        X,
+        pca_var=pca_var,
+        ica1_dim=ica1_dim,
+        random_state=random_state,
+        cache=cache,
+        ica_retry_config=ica_retry_config,
+    )
     pca_bundle_base = stage1["pca_bundle_base"]
     n_pcs = int(stage1["n_pcs"])
     Xp = stage1["Xp"]
@@ -731,35 +818,43 @@ def fit_transforms(
         Xi1 = stage1["Xi1"]
         d1 = int(stage1["d1"])
         try:
-            d2 = max(1, min(k - 1, Xi1.shape[1]))
-            ica2_res = _fit_ica_with_retries(Xi1, d2, random_state, "ICA②", ica_retry_config)
-            ica2 = ica2_res["ica"]
-            Xi2 = ica2_res["S"]
-            d2 = int(ica2_res["n_components"])
+            # Cluster①: ICA①空間で暫定クラスタを作る。
+            # get_pipeline_result() 側で cluster② を行うため、ここでは Xfinal の作成に使う。
+            cluster1 = spherical_kmeans(Xi1, k=k, random_state=random_state)
+            lab1 = cluster1["labels"]
+
+            # Centroid Projection:
+            # クラスタ①の重心差が張る between-class 方向を取り出す。
+            W, mu, rank, singular_values = between_class_projection(Xi1, lab1)
+            Xfinal = ((Xi1 - mu) @ W.T).astype(np.float32)
+
             bundle = TransformBundle(
                 **pca_bundle_base,
                 ica1_components=np.asarray(ica1.components_, dtype=np.float32),
                 ica1_mean=np.asarray(getattr(ica1, "mean_", np.zeros(n_pcs)), dtype=np.float32),
                 ica1_n_components=int(d1),
-                ica2_components=np.asarray(ica2.components_, dtype=np.float32),
-                ica2_mean=np.asarray(getattr(ica2, "mean_", np.zeros(d1)), dtype=np.float32),
-                ica2_n_components=int(d2),
-                transform_mode="full_pvm",
+                # 互換性のため既存の ica2 スロットを流用する。
+                # 中身は ICA② ではなく centroid projection の W, μ。
+                ica2_components=np.asarray(W, dtype=np.float32),
+                ica2_mean=np.asarray(mu, dtype=np.float32),
+                ica2_n_components=int(rank),
+                transform_mode="full_original_pvm",
                 ica1_status="converged",
-                ica2_status="converged",
-                final_n_components=int(d2),
+                ica2_status="centroid_projection",
+                final_n_components=int(rank),
                 fallback_level=0,
             )
             info = {
-                "transform_mode": "full_pvm",
+                "transform_mode": "full_original_pvm",
+                "projection_type": "centroid_projection",
                 "ica1_status": "converged",
-                "ica2_status": "converged",
-                "retry_count": int(stage1["ica1_retry_count"] + ica2_res["retry_count"]),
+                "ica2_status": "centroid_projection",
+                "retry_count": int(stage1["ica1_retry_count"]),
                 "fallback_level": 0,
-                "final_dims": {"pca": int(n_pcs), "ica1": int(d1), "ica2": int(d2)},
+                "final_dims": {"pca": int(n_pcs), "ica1": int(d1), "ica2": int(rank)},
                 "quality_gate_passed": True,
                 "ica1_attempts": int(stage1.get("ica1_attempts", 1)),
-                "ica2_attempts": int(ica2_res.get("attempts", 1)),
+                "ica2_attempts": 0,
                 "ica1_setup": {
                     "algo": stage1.get("ica1_algo"),
                     "max_iter": int(stage1.get("ica1_max_iter", 0)),
@@ -767,14 +862,17 @@ def fit_transforms(
                     "seed": int(stage1.get("ica1_seed", random_state)),
                 },
                 "ica2_setup": {
-                    "algo": str(ica2_res.get("algo", "")),
-                    "max_iter": int(ica2_res.get("max_iter", 0)),
-                    "tol": float(ica2_res.get("tol", 0.0)),
-                    "seed": int(ica2_res.get("seed", random_state)),
+                    "method": "between_class_projection",
+                    "rank": int(rank),
+                    "max_rank": int(max(1, min(k - 1, d1))),
+                    "cluster1_objective": float(cluster1.get("objective", 0.0)),
+                    "cluster1_k": int(k),
+                    "singular_values": [float(x) for x in singular_values[: min(len(singular_values), 20)]],
                 },
             }
-            return bundle, Xi2.astype(np.float32), info
+            return bundle, Xfinal.astype(np.float32), info
         except RuntimeError as e2:
+            # Centroid Projection が退化した場合は、ICA①空間そのものにfallbackする。
             bundle = TransformBundle(
                 **pca_bundle_base,
                 ica1_components=np.asarray(ica1.components_, dtype=np.float32),
@@ -785,14 +883,15 @@ def fit_transforms(
                 ica2_n_components=0,
                 transform_mode="ica1_only_pvm",
                 ica1_status="converged",
-                ica2_status="failed",
+                ica2_status="centroid_projection_failed",
                 final_n_components=int(d1),
                 fallback_level=1,
             )
             info = {
                 "transform_mode": "ica1_only_pvm",
+                "projection_type": "none",
                 "ica1_status": "converged",
-                "ica2_status": "failed",
+                "ica2_status": "centroid_projection_failed",
                 "retry_count": int(stage1["ica1_retry_count"]),
                 "fallback_level": 1,
                 "final_dims": {"pca": int(n_pcs), "ica1": int(d1), "ica2": 0},
@@ -827,6 +926,7 @@ def fit_transforms(
     )
     info = {
         "transform_mode": "pca_pvm",
+        "projection_type": "none",
         "ica1_status": "failed",
         "ica2_status": "skipped",
         "retry_count": 0,
@@ -850,7 +950,7 @@ def apply_transforms(X: np.ndarray, bundle: TransformBundle) -> np.ndarray:
     Xp_full = (Xs - bundle.pca_mean) @ bundle.pca_components.T
     Xp = Xp_full[:, : bundle.pca_n_components]
 
-    if bundle.transform_mode == "full_pvm":
+    if bundle.transform_mode == "full_original_pvm":
         Xi1 = (Xp - bundle.ica1_mean) @ bundle.ica1_components.T
         Xi2 = (Xi1 - bundle.ica2_mean) @ bundle.ica2_components.T
         return Xi2[:, : bundle.final_n_components].astype(np.float32)
@@ -1151,7 +1251,7 @@ def candidate_stability(
 
 
 def fallback_penalty_value(transform_mode: str) -> float:
-    if transform_mode == "full_pvm":
+    if transform_mode == "full_original_pvm":
         return 0.0
     if transform_mode == "ica1_only_pvm":
         return 0.5
@@ -1425,7 +1525,7 @@ def _bundle_from_npz(path: Path) -> Tuple[TransformBundle, np.ndarray]:
             ica2_mean=np.asarray(data["ica2_mean"], dtype=np.float32),
             ica2_n_components=int(_npz_scalar(data, "ica2_n_components")),
             embed_dim=int(_npz_scalar(data, "embed_dim")),
-            transform_mode=str(_npz_scalar(data, "transform_mode", "full_pvm")),
+            transform_mode=str(_npz_scalar(data, "transform_mode", "full_original_pvm")),
             ica1_status=str(_npz_scalar(data, "ica1_status", "converged")),
             ica2_status=str(_npz_scalar(data, "ica2_status", "converged")),
             final_n_components=int(_npz_scalar(data, "final_n_components", _npz_scalar(data, "ica2_n_components"))),
@@ -1496,12 +1596,13 @@ def load_baseline_version(result_root: Path, project: str, version: Optional[str
     with open(manifest_path, "r", encoding="utf-8") as f:
         payload = json.load(f)
     schema = str(payload.get("schema_version", ""))
-    # v5.6以前の schema 1.0 baseline は、embedding_prefix / max_len が
-    # manifest に無いため v5.7 の lock/unlock/restore では安全に停止させる。
-    # ただし読み込み自体をここで拒否すると、親切な互換性エラーを出せないので
-    # schema 1.0 は後段の embedding 設定チェックへ渡す。
-    if schema not in (SCHEMA_VERSION, LEGACY_SCHEMA_VERSION):
-        raise RuntimeError(f"baseline schema version が不一致です。expected={SCHEMA_VERSION} got={schema}")
+    # PVM Standard 6.0.0 は旧baseline互換を持たない。
+    # 旧プロジェクトは新標準でbaselineを再作成する。
+    if schema != SCHEMA_VERSION:
+        raise RuntimeError(
+            f"baseline schema version が不一致です。PVM Standard 6.0.0 requires {SCHEMA_VERSION}; "
+            f"旧baselineは互換性がないため再作成してください。got={schema}"
+        )
     bundle, centroids = _bundle_from_npz(model_path)
     return bundle, centroids, payload["meta"], ver
 
@@ -1625,10 +1726,10 @@ def _fmt_examples(df_src: pd.DataFrame, text_col: str, indices: Sequence[int], d
 
 
 def quality_note_from_mode(transform_mode: str) -> str:
-    if transform_mode == "full_pvm":
-        return "標準のPVM経路で解析しています。"
+    if transform_mode == "full_original_pvm":
+        return "PVM Standard 6.0.0 の標準経路で解析しています。"
     if transform_mode == "ica1_only_pvm":
-        return "ICA①までは使用し、最終再構成を省略した経路です。安定性を優先しています。"
+        return "ICA①までは使用し、centroid projection を省略した経路です。安定性を優先しています。"
     if transform_mode == "pca_pvm":
         return "ICAを用いない安定性優先の代替経路です。比較可能性は維持しています。"
     return "解析経路情報が不明です。"
@@ -1698,7 +1799,7 @@ def compute_run_quality(
         threshold_exceed_rate = float(np.mean(np.asarray(base_dists, dtype=np.float32) > float(base_threshold)))
 
     review_suggested = False
-    if transform_mode != "full_pvm":
+    if transform_mode != "full_original_pvm":
         review_suggested = True
     if threshold_exceed_rate is not None and threshold_exceed_rate >= DEFAULT_BASELINE_REVIEW_EXCEED_RATE:
         review_suggested = True
@@ -1716,7 +1817,7 @@ def compute_run_quality(
         severe_quality_issue = True
 
     summary_bits = []
-    if transform_mode != "full_pvm":
+    if transform_mode != "full_original_pvm":
         summary_bits.append("今回は標準経路ではなく代替経路を使用")
     if wide_count > 0:
         summary_bits.append(f"幅広クラスタ {wide_count} 件")
@@ -2467,8 +2568,8 @@ def _smoke_internal() -> None:
         assert latest == "v003"
         assert list_versions(root, "smoke") == ["v001", "v002", "v003"]
 
-        # v5.6以前の旧baseline(schema 1.0 + embedding設定なし)は読み込み自体は許容し、
-        # lock/unlock/restore の手前で親切なメッセージにより安全停止させる。
+        # PVM Standard 6.0.0 は旧baselineを読み込まない。
+        # 旧プロジェクトは新標準でbaselineを再作成する。
         legacy_dir = history_root(root, "legacy") / "v001"
         ensure_dir(legacy_dir)
         (legacy_dir / "baseline_model.npz").write_bytes((history_root(root, "smoke") / ver1 / "baseline_model.npz").read_bytes())
@@ -2482,18 +2583,11 @@ def _smoke_internal() -> None:
             "version": "v001",
             "meta": legacy_meta,
         })
-        _, _, legacy_loaded_meta, _ = load_baseline_version(root, "legacy", "v001")
-        assert "embedding_prefix" not in legacy_loaded_meta
         try:
-            validate_embedding_compat(legacy_loaded_meta, "dummy", "", 128)
-            raise AssertionError("legacy baseline should stop before lock/unlock")
-        except SystemExit as e:
-            assert "v5.6以前" in str(e)
-        try:
-            _restore_only(root, argparse.Namespace(baseline_from="legacy", project="legacy_restored", restore_version="v001"))
-            raise AssertionError("legacy baseline restore should stop")
-        except BaselineSelectionError as e:
-            assert "v5.6以前" in str(e)
+            load_baseline_version(root, "legacy", "v001")
+            raise AssertionError("legacy baseline should not load in PVM Standard 6.0.0")
+        except RuntimeError as e:
+            assert "旧baseline" in str(e)
 
     # threshold drift guard: a single biased unlock batch must not loosen the baseline too much
     X_far = np.array([
