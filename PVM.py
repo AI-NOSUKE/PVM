@@ -833,7 +833,7 @@ def fit_transforms(
                 ica1_components=np.asarray(ica1.components_, dtype=np.float32),
                 ica1_mean=np.asarray(getattr(ica1, "mean_", np.zeros(n_pcs)), dtype=np.float32),
                 ica1_n_components=int(d1),
-                # 互換性のため既存の ica2 スロットを流用する。
+                # 既存の TransformBundle 構造を大きく変えないため、ica2 スロットを射影用に流用する。
                 # 中身は ICA② ではなく centroid projection の W, μ。
                 ica2_components=np.asarray(W, dtype=np.float32),
                 ica2_mean=np.asarray(mu, dtype=np.float32),
