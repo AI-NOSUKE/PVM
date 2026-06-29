@@ -1,5 +1,5 @@
 # PVM (Phantom Vector Mapping)
-![python](https://img.shields.io/badge/python-3.11%2B-blue)
+![python](https://img.shields.io/badge/python-3.13-blue)
 ![license](https://img.shields.io/badge/License-PVM%20v1.2-green)
 ![ci](https://github.com/AI-NOSUKE/PVM/actions/workflows/ci.yml/badge.svg)
 
@@ -114,12 +114,14 @@ Ruri v3 のクラスタリング用途に合わせ、既定では各テキスト
 ```powershell
 git clone https://github.com/AI-NOSUKE/PVM.git
 cd PVM
-python -m venv .venv
+py -3.13 -m venv .venv   # Windows
+# python3.13 -m venv .venv # macOS/Linux
 .\.venv\Scripts\activate    # Windows
 # source .venv/bin/activate # macOS/Linux
 pip install -r requirements.txt
 ```
-- Python 3.11+ 推奨。初回は埋め込みモデル取得で少し時間がかかることがあります。
+- Python 3.13 推奨。Python 3.14 は依存ライブラリ互換性の検証中で、正式な保証対象ではありません。初回は埋め込みモデル取得で少し時間がかかることがあります。
+- Python 3.13対応に伴い依存ライブラリを更新しています。PVM Standard 6.0.0のアルゴリズム仕様は維持していますが、旧依存環境で作成したbaselineと完全な数値一致を保証するものではありません。重要なプロジェクトでは、Python 3.13環境でbaselineを再作成することを推奨します。
 
 ---
 
