@@ -62,6 +62,10 @@ Evaluation should also include:
 
 See [docs/evaluation_protocol.md](docs/evaluation_protocol.md) for the proposed evaluation protocol.
 
+## Python Runtime Support
+
+Current v6.0.0 includes Python 3.14 dependency stack support. `PVM.py` itself remains `PVM-standard-6.0.0`, and the core algorithm is unchanged. CI checks Python 3.13 and Python 3.14 for dependency installation, compile, version output, and self-check.
+
 ## Tested Items
 
 The following checks were run during the migration and release preparation:

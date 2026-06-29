@@ -1,5 +1,5 @@
 # PVM (Phantom Vector Mapping)
-![python](https://img.shields.io/badge/python-3.14-blue)
+![python](https://img.shields.io/badge/python-3.13%20%7C%203.14-blue)
 ![license](https://img.shields.io/badge/License-PVM%20v1.2-green)
 ![ci](https://github.com/AI-NOSUKE/PVM/actions/workflows/ci.yml/badge.svg)
 
@@ -120,7 +120,7 @@ py -3.14 -m venv .venv   # Windows
 # source .venv/bin/activate # macOS/Linux
 pip install -r requirements.txt
 ```
-- Python 3.14 推奨。初回は埋め込みモデル取得で少し時間がかかることがあります。
+- 推奨環境は Python 3.14 です。互換性確認として、CIでは Python 3.13 / 3.14 の両方で依存関係のインストール、`py_compile`、`--version`、`--self-check` を実行しています。初回は埋め込みモデル取得で少し時間がかかることがあります。
 - Python 3.14対応に伴い依存ライブラリを更新しています。PVM Standard 6.0.0のアルゴリズム仕様は維持していますが、旧依存環境で作成したbaselineと完全な数値一致を保証するものではありません。重要なプロジェクトでは、Python 3.14環境でbaselineを再作成することを推奨します。
 
 ---
@@ -129,7 +129,7 @@ pip install -r requirements.txt
 
 ### ① 動作確認サンプル
 
-CIでは `py_compile` / `--version` / `--self-check` を検証しています。<br>
+CIでは Python 3.13 / 3.14 の両方で `py_compile` / `--version` / `--self-check` を検証しています。<br>
 以下は、同梱サンプル `examples/sample_texts.csv` を使ってローカルで実行できる最小例です。
 
 ```bash
