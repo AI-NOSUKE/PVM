@@ -6,6 +6,8 @@ scikit-learn>=1.6,<2
 # --- Embedding (Ruri v3 系で必須) ---
 # CPU wheel index is included to avoid pulling heavy CUDA builds where a CPU wheel is available.
 --extra-index-url https://download.pytorch.org/whl/cpu
+# PyTorch CPU wheels for Python 3.14 currently constrain setuptools below 82.
+setuptools<82
 torch>=2.6,<3
 transformers>=4.45,<5
 huggingface_hub>=0.24,<1
