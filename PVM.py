@@ -33,7 +33,7 @@ Current defaults
 - batch: 8
 """
 
-__version__ = "6.0.0"
+__version__ = "6.1.0"
 
 import argparse
 import json
@@ -87,9 +87,10 @@ except ImportError:  # pragma: no cover
         def close(self):
             pass
 
-SCHEMA_VERSION = "2.0"
+SCHEMA_VERSION = "2.1"
+PREVIOUS_SCHEMA_VERSION = "2.0"
 LEGACY_SCHEMA_VERSION = "1.1"
-SCRIPT_VERSION = "PVM-standard-6.0.0"
+SCRIPT_VERSION = "PVM-standard-6.1.0"
 DEFAULT_EMBEDDING_PREFIX = "トピック: "
 DEFAULT_MAX_LEN = 8192
 DEFAULT_BATCH = 8
@@ -99,6 +100,7 @@ DEFAULT_EXTRA_RADIUS_MULT = 1.10
 DEFAULT_UNLOCK_MIN_REL_GAIN = 0.15
 DEFAULT_UNLOCK_MIN_SIL = 0.0
 DEFAULT_BOUNDARY_MARGIN = 0.03
+MIN_EVAL_SILHOUETTE = 0.0
 
 # unlock 1回あたりの base_threshold 更新幅の上限（相対値）。
 # 偏ったバッチ1回で基準が大きく動いて baseline が壊れるのを防ぐ。
@@ -494,6 +496,8 @@ class BaselineMeta:
     base_threshold: float
     extra_accept_thresholds: List[float]
     base_distance_quantiles: Dict[str, float]
+    ica1_base_threshold: Optional[float]
+    ica1_base_distance_quantiles: Optional[Dict[str, float]]
     unlock_q: float
     extra_relative_advantage: float
     extra_radius_multiplier: float
@@ -545,7 +549,7 @@ def _fit_ica_with_retries(
     ica_retry_config: Optional[IcaRetryConfig] = None,
 ) -> Dict[str, Any]:
     retry_cfg = ica_retry_config or DEFAULT_ICA_RETRY
-    min_components = 1 if stage_name == "ICA②" else 2
+    min_components = 2
     start_components = max(min_components, int(n_components))
     component_candidates = list(range(start_components, min_components - 1, -1))
     component_candidates = component_candidates[: max(4, min(retry_cfg.max_dim_candidates, len(component_candidates)))]
@@ -796,7 +800,7 @@ def fit_transforms(
             -> Xfinal
             -> cluster② は get_pipeline_result() 側の spherical_kmeans で実行
 
-    旧 full_pvm = 全文書ICA②(k-1) はこの版ではサポートしない。
+    旧 full_pvm = 全文書に対する second ICA (k-1) route はこの版ではサポートしない。
     この版以降は Full / Original PVM をPVMの正式仕様として扱う。
     """
     cache = cache if cache is not None else {}
@@ -833,8 +837,8 @@ def fit_transforms(
                 ica1_components=np.asarray(ica1.components_, dtype=np.float32),
                 ica1_mean=np.asarray(getattr(ica1, "mean_", np.zeros(n_pcs)), dtype=np.float32),
                 ica1_n_components=int(d1),
-                # 既存の TransformBundle 構造を大きく変えないため、ica2 スロットを射影用に流用する。
-                # 中身は ICA② ではなく centroid projection の W, μ。
+                # ica2_* fields are kept for backward compatibility.
+                # They store the Centroid Projection matrix W and mean mu, not a second ICA model.
                 ica2_components=np.asarray(W, dtype=np.float32),
                 ica2_mean=np.asarray(mu, dtype=np.float32),
                 ica2_n_components=int(rank),
@@ -965,6 +969,89 @@ def apply_transforms(X: np.ndarray, bundle: TransformBundle) -> np.ndarray:
     raise ValueError(f"未知の transform_mode です: {bundle.transform_mode}")
 
 
+def apply_pre_projection_space(X: np.ndarray, bundle: TransformBundle) -> np.ndarray:
+    """Return the normalized space used for pre-projection novelty gates.
+
+    For the standard route this is L2-normalized ICA1 space. Fallback routes
+    degrade to their available pre/final space so schema 2.1 baselines remain
+    usable without changing the clustering pipeline.
+    """
+    if X.shape[1] != bundle.embed_dim:
+        raise ValueError("埋め込み次元が baseline と不一致です。embedding model や前処理を確認してください。")
+    safe_scale = np.where(bundle.scaler_scale == 0.0, 1.0, bundle.scaler_scale)
+    Xs = (X - bundle.scaler_mean) / safe_scale
+    Xp_full = (Xs - bundle.pca_mean) @ bundle.pca_components.T
+    Xp = Xp_full[:, : bundle.pca_n_components]
+
+    if bundle.transform_mode in {"full_original_pvm", "ica1_only_pvm"} and bundle.ica1_n_components > 0:
+        Xi1 = (Xp - bundle.ica1_mean) @ bundle.ica1_components.T
+        return l2_normalize(Xi1[:, : bundle.ica1_n_components]).astype(np.float32)
+
+    if bundle.transform_mode == "pca_pvm":
+        return l2_normalize(Xp[:, : bundle.final_n_components]).astype(np.float32)
+
+    return l2_normalize(apply_transforms(X, bundle)).astype(np.float32)
+
+
+def centroids_from_labels(Xn: np.ndarray, labels: np.ndarray, k: int) -> np.ndarray:
+    Xn = l2_normalize(Xn)
+    labels = np.asarray(labels).astype(int)
+    centroids = np.zeros((int(k), Xn.shape[1]), dtype=np.float32)
+    for j in range(int(k)):
+        mask = labels == j
+        if not np.any(mask):
+            continue
+        c = Xn[mask].mean(axis=0, dtype=np.float64)
+        norm = np.linalg.norm(c)
+        if norm > 1e-12:
+            centroids[j] = (c / norm).astype(np.float32)
+    return centroids
+
+
+def assigned_cosine_dists(Xn: np.ndarray, centroids: np.ndarray, labels: np.ndarray) -> np.ndarray:
+    Xn = l2_normalize(Xn)
+    Cn = l2_normalize(centroids)
+    labels = np.asarray(labels).astype(int)
+    safe_labels = np.clip(labels, 0, max(Cn.shape[0] - 1, 0))
+    sims = np.sum(Xn * Cn[safe_labels], axis=1)
+    return (1.0 - sims).astype(np.float32)
+
+
+def mean_centroid_similarity(Xn: np.ndarray, labels: np.ndarray, k: int) -> float:
+    centroids = centroids_from_labels(Xn, labels, k)
+    if centroids.size == 0:
+        return 0.0
+    dists = assigned_cosine_dists(Xn, centroids, labels)
+    return float(np.mean(1.0 - dists)) if len(dists) else 0.0
+
+
+def compute_pre_projection_gate_state(
+    Xpre_norm: np.ndarray,
+    labels: np.ndarray,
+    k: int,
+    unlock_q: float,
+    previous_threshold: Optional[float] = None,
+) -> Dict[str, Any]:
+    centroids = centroids_from_labels(Xpre_norm, labels, k)
+    dists = assigned_cosine_dists(Xpre_norm, centroids, labels)
+    threshold_raw = float(np.quantile(dists, float(unlock_q))) if len(dists) else float("inf")
+    threshold = threshold_raw
+    clamped = False
+    if previous_threshold is not None and math.isfinite(float(previous_threshold)) and float(previous_threshold) > 0.0:
+        lo = float(previous_threshold) * (1.0 - DEFAULT_UNLOCK_THRESHOLD_DRIFT)
+        hi = float(previous_threshold) * (1.0 + DEFAULT_UNLOCK_THRESHOLD_DRIFT)
+        threshold = float(min(max(threshold_raw, lo), hi))
+        clamped = abs(threshold - threshold_raw) > 1e-12
+    return {
+        "ica1_centroids": centroids.astype(np.float32),
+        "ica1_base_dists": dists.astype(np.float32),
+        "ica1_base_threshold": float(threshold),
+        "ica1_base_threshold_raw": float(threshold_raw),
+        "ica1_base_threshold_clamped": bool(clamped),
+        "ica1_base_distance_quantiles": quantile_table(dists),
+    }
+
+
 # ---------------------------------------------------------------------------
 # clustering
 # ---------------------------------------------------------------------------
@@ -1010,21 +1097,36 @@ def spherical_kmeans(X: np.ndarray, k: int, random_state: int, max_iter: int = 1
     rng = np.random.default_rng(random_state)
     C = _pick_kmeanspp_rows(Xn, k, rng)
     prev_labels = None
+    empty_reassign_events: List[List[int]] = []
 
     for _ in range(max_iter):
         sims = Xn @ C.T
         labels = sims.argmax(axis=1)
 
         C_new = np.zeros_like(C)
+        used_reassign: set[int] = set()
+        reassign_event: List[int] = []
+        far_order = np.argsort(np.max(sims, axis=1))
         for j in range(k):
             mask = labels == j
             if not np.any(mask):
-                far_idx = int(np.argmin(np.max(sims, axis=1)))
-                C_new[j] = Xn[far_idx]
+                far_idx = None
+                for cand_idx in far_order:
+                    ci = int(cand_idx)
+                    if ci not in used_reassign:
+                        far_idx = ci
+                        break
+                if far_idx is None:
+                    far_idx = int(rng.integers(0, n))
+                used_reassign.add(int(far_idx))
+                reassign_event.append(int(far_idx))
+                C_new[j] = Xn[int(far_idx)]
             else:
                 c = Xn[mask].mean(axis=0, dtype=np.float64)
                 norm = np.linalg.norm(c)
                 C_new[j] = C[j] if norm <= 1e-12 else (c / norm).astype(np.float32)
+        if reassign_event:
+            empty_reassign_events.append(reassign_event)
 
         if prev_labels is not None and np.array_equal(labels, prev_labels):
             C = C_new
@@ -1045,6 +1147,7 @@ def spherical_kmeans(X: np.ndarray, k: int, random_state: int, max_iter: int = 1
         "dists": dists.astype(np.float32),
         "objective": objective,
         "Xn": Xn,
+        "empty_reassign_events": empty_reassign_events,
     }
 
 
@@ -1057,16 +1160,25 @@ class CandidateResult:
     ica1_dim: int
     k: int
     ic2_dim: int
-    sil: float
-    ch: float
-    db: float
-    db_inv: float
+    silhouette_eval_space: float
+    ch_eval_space: float
+    db_eval_space: float
+    db_inv_eval_space: float
+    mean_centroid_similarity_eval_space: float
+    silhouette_projected_space: float
+    ch_projected_space: float
+    db_projected_space: float
+    db_inv_projected_space: float
     entropy_balance: float
     stability: float
     k_penalty: float
     fallback_penalty: float
     total_score: float
     objective: float
+    sil: float
+    ch: float
+    db: float
+    db_inv: float
     random_state: int
     transform_mode: str
     ica1_status: str
@@ -1100,6 +1212,9 @@ def calc_internal_metrics(Xn: np.ndarray, labels: np.ndarray) -> Dict[str, float
         out["sil"] = float(silhouette_score(Xn, labels, metric="cosine"))
     except ValueError:
         out["sil"] = -1.0
+    # Calinski-Harabasz and Davies-Bouldin assume Euclidean geometry. PVM
+    # applies them to L2-normalized vectors as approximate compactness /
+    # separation diagnostics; cosine silhouette is the primary internal metric.
     try:
         out["ch"] = float(calinski_harabasz_score(Xn, labels))
     except ValueError:
@@ -1112,7 +1227,6 @@ def calc_internal_metrics(Xn: np.ndarray, labels: np.ndarray) -> Dict[str, float
         out["db"] = 10.0
         out["db_inv"] = 0.0
     return out
-
 
 def entropy_balance(labels: np.ndarray, k: int) -> float:
     counts = np.bincount(labels, minlength=k).astype(np.float64)
@@ -1196,7 +1310,7 @@ def get_pipeline_result(
         cache[light_key] = result
         return result
 
-    metrics = calc_internal_metrics(cluster["Xn"], cluster["labels"])
+    projected_metrics = calc_internal_metrics(cluster["Xn"], cluster["labels"])
     result = {
         "bundle": bundle,
         "Xfinal": Xfinal,
@@ -1204,7 +1318,16 @@ def get_pipeline_result(
         "labels": cluster["labels"],
         "centroids": cluster["centroids"],
         "dists": cluster["dists"],
+        "objective_projected_space": cluster["objective"],
         "objective": cluster["objective"],
+        "silhouette_projected_space": float(projected_metrics["sil"]),
+        "ch_projected_space": float(projected_metrics["ch"]),
+        "db_projected_space": float(projected_metrics["db"]),
+        "db_inv_projected_space": float(projected_metrics["db_inv"]),
+        "sil": float(projected_metrics["sil"]),
+        "ch": float(projected_metrics["ch"]),
+        "db": float(projected_metrics["db"]),
+        "db_inv": float(projected_metrics["db_inv"]),
         "transform_mode": bundle.transform_mode,
         "ica1_status": bundle.ica1_status,
         "ica2_status": bundle.ica2_status,
@@ -1213,7 +1336,6 @@ def get_pipeline_result(
         "quality_gate_passed": bool(tinfo.get("quality_gate_passed", True)),
         "final_dims": tinfo.get("final_dims", {}),
         "transform_info": tinfo,
-        **metrics,
     }
     cache[key] = result
     return result
@@ -1272,6 +1394,10 @@ def explore_candidates(
         raise ValueError("データが3件未満です。最低3件以上必要です。")
 
     pca_base = get_pca_base(X, pca_var=pca_var, random_state=random_state, cache=cache)
+    # Candidate-selection metrics use one shared space across all candidates.
+    # Projected-space metrics are kept only as diagnostics because Centroid
+    # Projection is learned from each candidate's Cluster1 labels.
+    X_eval = l2_normalize(pca_base["Xp"])
     dims = propose_ica1_dims_from_pca_base(pca_base, pca_var)
     k_hi = min(int(k_max), n - 1)
     k_lo = max(2, int(k_min))
@@ -1285,12 +1411,21 @@ def explore_candidates(
         for d in dims:
             for k in range(k_lo, k_hi + 1):
                 res = get_pipeline_result(X, pca_var=pca_var, ica1_dim=d, k=k, random_state=random_state, cache=cache, ica_retry_config=ica_retry_config)
-                bal = entropy_balance(res["labels"], k)
+                labels = np.asarray(res["labels"], dtype=int)
+                eval_metrics = calc_internal_metrics(X_eval, labels)
+                projected_metrics = {
+                    "sil": float(res.get("silhouette_projected_space", res.get("sil", -1.0))),
+                    "ch": float(res.get("ch_projected_space", res.get("ch", 0.0))),
+                    "db": float(res.get("db_projected_space", res.get("db", 10.0))),
+                    "db_inv": float(res.get("db_inv_projected_space", res.get("db_inv", 0.0))),
+                }
+                objective_eval = mean_centroid_similarity(X_eval, labels, k)
+                bal = entropy_balance(labels, k)
                 stab = candidate_stability(X, pca_var=pca_var, ica1_dim=d, k=k, base_seed=random_state, cache=cache, ica_retry_config=ica_retry_config)
-                counts = np.bincount(res["labels"], minlength=k)
+                counts = np.bincount(labels, minlength=k)
                 min_count = int(counts.min()) if len(counts) else 0
                 gate_pass = bool(
-                    res["sil"] > -0.05
+                    eval_metrics["sil"] >= MIN_EVAL_SILHOUETTE
                     and min_count >= max(3, int(math.ceil(DEFAULT_MIN_CLUSTER_SHARE * max(n, 1))))
                 )
                 raw_rows.append(
@@ -1298,11 +1433,16 @@ def explore_candidates(
                         "ica1_dim": int(d),
                         "k": int(k),
                         "ic2_dim": int(res["bundle"].final_n_components),
-                        "sil": float(res["sil"]),
-                        "ch": float(res["ch"]),
-                        "db": float(res["db"]),
-                        "db_inv": float(res["db_inv"]),
-                        "objective": float(res["objective"]),
+                        "silhouette_eval_space": float(eval_metrics["sil"]),
+                        "ch_eval_space": float(eval_metrics["ch"]),
+                        "db_eval_space": float(eval_metrics["db"]),
+                        "db_inv_eval_space": float(eval_metrics["db_inv"]),
+                        "mean_centroid_similarity_eval_space": float(objective_eval),
+                        "silhouette_projected_space": float(projected_metrics["sil"]),
+                        "ch_projected_space": float(projected_metrics["ch"]),
+                        "db_projected_space": float(projected_metrics["db"]),
+                        "db_inv_projected_space": float(projected_metrics["db_inv"]),
+                        "objective": float(objective_eval),
                         "entropy_balance": float(bal),
                         "stability": float(stab),
                         "k_penalty": float(k_penalty_value(k, n)),
@@ -1323,10 +1463,10 @@ def explore_candidates(
         raise RuntimeError("有効な候補が見つかりませんでした。")
 
     sep_base = [
-        CANDIDATE_SCORING.sep_db_inv_weight * r["db_inv"]
+        CANDIDATE_SCORING.sep_db_inv_weight * r["db_inv_eval_space"]
         + CANDIDATE_SCORING.sep_sil_weight
-        * max(0.0, min(1.0, (r["sil"] + CANDIDATE_SCORING.sep_sil_shift) / CANDIDATE_SCORING.sep_sil_scale))
-        + CANDIDATE_SCORING.sep_objective_weight * max(0.0, min(1.0, r["objective"]))
+        * max(0.0, min(1.0, (r["silhouette_eval_space"] + CANDIDATE_SCORING.sep_sil_shift) / CANDIDATE_SCORING.sep_sil_scale))
+        + CANDIDATE_SCORING.sep_objective_weight * max(0.0, min(1.0, r["mean_centroid_similarity_eval_space"]))
         for r in raw_rows
     ]
     sep_scaled = relative_scale(sep_base, higher_is_better=True)
@@ -1352,16 +1492,25 @@ def explore_candidates(
                 ica1_dim=row["ica1_dim"],
                 k=row["k"],
                 ic2_dim=row["ic2_dim"],
-                sil=row["sil"],
-                ch=row["ch"],
-                db=row["db"],
-                db_inv=row["db_inv"],
+                silhouette_eval_space=row["silhouette_eval_space"],
+                ch_eval_space=row["ch_eval_space"],
+                db_eval_space=row["db_eval_space"],
+                db_inv_eval_space=row["db_inv_eval_space"],
+                mean_centroid_similarity_eval_space=row["mean_centroid_similarity_eval_space"],
+                silhouette_projected_space=row["silhouette_projected_space"],
+                ch_projected_space=row["ch_projected_space"],
+                db_projected_space=row["db_projected_space"],
+                db_inv_projected_space=row["db_inv_projected_space"],
                 entropy_balance=row["entropy_balance"],
                 stability=row["stability"],
                 k_penalty=row["k_penalty"],
                 fallback_penalty=row["fallback_penalty"],
                 total_score=float(total),
                 objective=row["objective"],
+                sil=row["silhouette_eval_space"],
+                ch=row["ch_eval_space"],
+                db=row["db_eval_space"],
+                db_inv=row["db_inv_eval_space"],
                 random_state=int(random_state),
                 transform_mode=row["transform_mode"],
                 ica1_status=row["ica1_status"],
@@ -1372,7 +1521,7 @@ def explore_candidates(
             )
         )
 
-    results.sort(key=lambda r: (not r.quality_gate_passed, -r.total_score, r.fallback_level, -r.stability, -r.entropy_balance, -r.sil))
+    results.sort(key=lambda r: (not r.quality_gate_passed, -r.total_score, r.fallback_level, -r.stability, -r.entropy_balance, -r.silhouette_eval_space))
     results = [replace(r, rank=i) for i, r in enumerate(results, start=1)]
 
     mode_counts: Dict[str, int] = {}
@@ -1381,7 +1530,6 @@ def explore_candidates(
     mode_summary = ", ".join(f"{k}={v}" for k, v in sorted(mode_counts.items()))
     log.info("候補探索完了: plans=%d, modes=[%s]", len(results), mode_summary)
     return results
-
 
 def baseline_root(result_root: Path, project: str) -> Path:
     return result_root / f"baseline_{project}"
@@ -1481,8 +1629,8 @@ def _atomic_write_npz(path: Path, arrays: Dict[str, np.ndarray]) -> None:
         tmp_path.unlink(missing_ok=True)
 
 
-def _bundle_to_arrays(bundle: TransformBundle, centroids: np.ndarray) -> Dict[str, np.ndarray]:
-    return {
+def _bundle_to_arrays(bundle: TransformBundle, centroids: np.ndarray, ica1_centroids: Optional[np.ndarray] = None) -> Dict[str, np.ndarray]:
+    arrays = {
         "scaler_mean": np.asarray(bundle.scaler_mean, dtype=np.float32),
         "scaler_scale": np.asarray(bundle.scaler_scale, dtype=np.float32),
         "pca_components": np.asarray(bundle.pca_components, dtype=np.float32),
@@ -1491,6 +1639,8 @@ def _bundle_to_arrays(bundle: TransformBundle, centroids: np.ndarray) -> Dict[st
         "ica1_components": np.asarray(bundle.ica1_components, dtype=np.float32),
         "ica1_mean": np.asarray(bundle.ica1_mean, dtype=np.float32),
         "ica1_n_components": np.asarray([bundle.ica1_n_components], dtype=np.int32),
+        # ica2_* fields are kept for backward compatibility. They store the
+        # Centroid Projection matrix W and mean mu, not a second ICA model.
         "ica2_components": np.asarray(bundle.ica2_components, dtype=np.float32),
         "ica2_mean": np.asarray(bundle.ica2_mean, dtype=np.float32),
         "ica2_n_components": np.asarray([bundle.ica2_n_components], dtype=np.int32),
@@ -1502,7 +1652,11 @@ def _bundle_to_arrays(bundle: TransformBundle, centroids: np.ndarray) -> Dict[st
         "fallback_level": np.asarray([bundle.fallback_level], dtype=np.int32),
         "centroids": np.asarray(centroids, dtype=np.float32),
     }
-
+    if ica1_centroids is None:
+        arrays["ica1_centroids"] = np.zeros((0, 0), dtype=np.float32)
+    else:
+        arrays["ica1_centroids"] = np.asarray(ica1_centroids, dtype=np.float32)
+    return arrays
 
 def _npz_scalar(data: Any, key: str, default: Any = None) -> Any:
     if key in data:
@@ -1510,7 +1664,7 @@ def _npz_scalar(data: Any, key: str, default: Any = None) -> Any:
     return default
 
 
-def _bundle_from_npz(path: Path) -> Tuple[TransformBundle, np.ndarray]:
+def _bundle_from_npz(path: Path) -> Tuple[TransformBundle, np.ndarray, Optional[np.ndarray]]:
     with np.load(path, allow_pickle=False) as data:
         bundle = TransformBundle(
             scaler_mean=np.asarray(data["scaler_mean"], dtype=np.float32),
@@ -1532,8 +1686,12 @@ def _bundle_from_npz(path: Path) -> Tuple[TransformBundle, np.ndarray]:
             fallback_level=int(_npz_scalar(data, "fallback_level", 0)),
         )
         centroids = l2_normalize(np.asarray(data["centroids"], dtype=np.float32))
-    return bundle, centroids
-
+        ica1_centroids = None
+        if "ica1_centroids" in data:
+            raw = np.asarray(data["ica1_centroids"], dtype=np.float32)
+            if raw.size > 0:
+                ica1_centroids = l2_normalize(raw)
+    return bundle, centroids, ica1_centroids
 
 def save_baseline_version(
     result_root: Path,
@@ -1541,6 +1699,7 @@ def save_baseline_version(
     bundle: TransformBundle,
     centroids: np.ndarray,
     meta: BaselineMeta,
+    ica1_centroids: Optional[np.ndarray] = None,
 ) -> str:
     broot = baseline_root(result_root, project)
     hroot = history_root(result_root, project)
@@ -1559,7 +1718,7 @@ def save_baseline_version(
         "version": ver,
         "meta": asdict(meta),
     }
-    arrays = _bundle_to_arrays(bundle, centroids)
+    arrays = _bundle_to_arrays(bundle, centroids, ica1_centroids=ica1_centroids)
     _atomic_write_npz(vdir / "baseline_model.npz", arrays)
     _atomic_write_json(vdir / "manifest.json", manifest)
 
@@ -1596,16 +1755,24 @@ def load_baseline_version(result_root: Path, project: str, version: Optional[str
     with open(manifest_path, "r", encoding="utf-8") as f:
         payload = json.load(f)
     schema = str(payload.get("schema_version", ""))
-    # PVM Standard 6.0.0 は旧baseline互換を持たない。
-    # 旧プロジェクトは新標準でbaselineを再作成する。
-    if schema != SCHEMA_VERSION:
+    if schema not in {SCHEMA_VERSION, PREVIOUS_SCHEMA_VERSION}:
         raise RuntimeError(
-            f"baseline schema version が不一致です。PVM Standard 6.0.0 requires {SCHEMA_VERSION}; "
-            f"旧baselineは互換性がないため再作成してください。got={schema}"
+            f"baseline schema version が不一致です。PVM Standard 6.1.0 requires {SCHEMA_VERSION}; "
+            f"schema 2.0 baseline のみ互換読込できます。got={schema}"
         )
-    bundle, centroids = _bundle_from_npz(model_path)
-    return bundle, centroids, payload["meta"], ver
-
+    bundle, centroids, ica1_centroids = _bundle_from_npz(model_path)
+    meta_raw = dict(payload["meta"])
+    meta_raw["_baseline_schema_version"] = schema
+    meta_raw["_runtime_ica1_centroids"] = ica1_centroids
+    if schema == PREVIOUS_SCHEMA_VERSION:
+        meta_raw["pre_projection_gate_missing"] = True
+        log.warning(
+            "schema 2.0 baseline を読み込みました: pre_projection_gate_missing。"
+            "ICA1 gate は使わず従来の final空間 gate のみで動作します。"
+        )
+    else:
+        meta_raw["pre_projection_gate_missing"] = ica1_centroids is None
+    return bundle, centroids, meta_raw, ver
 
 # ---------------------------------------------------------------------------
 # exports
@@ -1647,9 +1814,15 @@ def export_candidate_assignments(
             "ica1_dim": r.ica1_dim,
             "ic2_dim": r.ic2_dim,
             "k": r.k,
-            "sil": r.sil,
-            "ch": r.ch,
-            "db_inv": r.db_inv,
+            "silhouette_eval_space": r.silhouette_eval_space,
+            "ch_eval_space": r.ch_eval_space,
+            "db_eval_space": r.db_eval_space,
+            "db_inv_eval_space": r.db_inv_eval_space,
+            "mean_centroid_similarity_eval_space": r.mean_centroid_similarity_eval_space,
+            "silhouette_projected_space": r.silhouette_projected_space,
+            "ch_projected_space": r.ch_projected_space,
+            "db_projected_space": r.db_projected_space,
+            "db_inv_projected_space": r.db_inv_projected_space,
             "entropy_balance": r.entropy_balance,
             "stability": r.stability,
             "k_penalty": r.k_penalty,
@@ -1727,7 +1900,7 @@ def _fmt_examples(df_src: pd.DataFrame, text_col: str, indices: Sequence[int], d
 
 def quality_note_from_mode(transform_mode: str) -> str:
     if transform_mode == "full_original_pvm":
-        return "PVM Standard 6.0.0 の標準経路で解析しています。"
+        return "PVM Standard 6.1.0 の標準経路で解析しています。"
     if transform_mode == "ica1_only_pvm":
         return "ICA①までは使用し、centroid projection を省略した経路です。安定性を優先しています。"
     if transform_mode == "pca_pvm":
@@ -1743,6 +1916,8 @@ def compute_run_quality(
     protected_cluster_count: int,
     transform_mode: str,
     gate_mask: Optional[np.ndarray] = None,
+    gate_final_mask: Optional[np.ndarray] = None,
+    gate_ica1_mask: Optional[np.ndarray] = None,
     accepted_extra_mask: Optional[np.ndarray] = None,
     added_mask: Optional[np.ndarray] = None,
     base_threshold: Optional[float] = None,
@@ -1793,6 +1968,11 @@ def compute_run_quality(
     added_rate = float(np.mean(np.asarray(added_mask).astype(bool))) if added_mask is not None and len(labels) else 0.0
     accepted_extra_rate = float(np.mean(np.asarray(accepted_extra_mask).astype(bool))) if accepted_extra_mask is not None and len(labels) else 0.0
     gate_over_rate = float(np.mean(np.asarray(gate_mask).astype(bool))) if gate_mask is not None and len(labels) else 0.0
+    gate_final_bool = np.asarray(gate_final_mask).astype(bool) if gate_final_mask is not None and len(labels) else np.zeros(len(labels), dtype=bool)
+    gate_ica1_bool = np.asarray(gate_ica1_mask).astype(bool) if gate_ica1_mask is not None and len(labels) else np.zeros(len(labels), dtype=bool)
+    gate_final_only_count = int(np.sum(gate_final_bool & (~gate_ica1_bool)))
+    gate_ica1_only_count = int(np.sum((~gate_final_bool) & gate_ica1_bool))
+    gate_both_count = int(np.sum(gate_final_bool & gate_ica1_bool))
 
     threshold_exceed_rate = None
     if base_threshold is not None and base_dists is not None and len(base_dists):
@@ -1846,6 +2026,9 @@ def compute_run_quality(
         "added_rate": added_rate,
         "accepted_extra_rate": accepted_extra_rate,
         "gate_over_rate": gate_over_rate,
+        "gate_final_only_count": gate_final_only_count,
+        "gate_ica1_only_count": gate_ica1_only_count,
+        "gate_both_count": gate_both_count,
         "threshold_exceed_rate": threshold_exceed_rate,
         "baseline_review_suggested": bool(review_suggested),
         "quality_gate_status": quality_gate_status,
@@ -2124,6 +2307,25 @@ def resolve_quantile_threshold(meta_raw: Dict[str, Any], requested_q: float) -> 
     return float(meta_raw.get("base_threshold", float("inf")))
 
 
+def resolve_ica1_quantile_threshold(meta_raw: Dict[str, Any], requested_q: float) -> Optional[float]:
+    qmap = meta_raw.get("ica1_base_distance_quantiles") or {}
+    try:
+        items = sorted((float(k), float(v)) for k, v in qmap.items())
+    except (TypeError, ValueError, AttributeError):
+        items = []
+    if items:
+        xs = np.array([k for k, _ in items], dtype=np.float64)
+        ys = np.array([v for _, v in items], dtype=np.float64)
+        q = float(min(max(requested_q, xs.min()), xs.max()))
+        return float(np.interp(q, xs, ys))
+    val = meta_raw.get("ica1_base_threshold")
+    if val is None:
+        return None
+    try:
+        return float(val)
+    except (TypeError, ValueError):
+        return None
+
 def compute_extra_accept_thresholds(labels: np.ndarray, dists: np.ndarray, k: int, radius_multiplier: float) -> List[float]:
     out: List[float] = []
     for j in range(k):
@@ -2143,6 +2345,9 @@ def gated_lock_assign(
     base_threshold: float,
     extra_accept_thresholds: Sequence[float],
     extra_relative_advantage: float,
+    Xpre: Optional[np.ndarray] = None,
+    ica1_centroids: Optional[np.ndarray] = None,
+    ica1_base_threshold: Optional[float] = None,
 ) -> Dict[str, Any]:
     Xn = l2_normalize(Xfinal)
     Cn = l2_normalize(centroids)
@@ -2155,7 +2360,20 @@ def gated_lock_assign(
 
     labels = base_labels.copy()
     dists = base_dists.copy()
-    gate_mask = base_dists > float(base_threshold)
+    gate_final_mask = base_dists > float(base_threshold)
+    gate_ica1_mask = np.zeros(len(Xn), dtype=bool)
+    base_dists_ica1 = np.full(len(Xn), np.nan, dtype=np.float32)
+
+    if Xpre is not None and ica1_centroids is not None and ica1_base_threshold is not None:
+        Cpre = np.asarray(ica1_centroids, dtype=np.float32)
+        if Cpre.ndim == 2 and Cpre.shape[0] >= protected_cluster_count and Cpre.shape[1] > 0:
+            Xpre_n = l2_normalize(np.asarray(Xpre, dtype=np.float32))
+            Cpre_base = l2_normalize(Cpre[:protected_cluster_count])
+            D_pre = cosine_distance_to_centroids(Xpre_n, Cpre_base)
+            base_dists_ica1 = D_pre[np.arange(len(D_pre)), base_labels].astype(np.float32)
+            gate_ica1_mask = base_dists_ica1 > float(ica1_base_threshold)
+
+    gate_mask = gate_final_mask | gate_ica1_mask
     accepted_extra_mask = np.zeros(len(Xn), dtype=np.int8)
 
     extra_count = int(Cn.shape[0] - protected_cluster_count)
@@ -2181,10 +2399,15 @@ def gated_lock_assign(
         "dists": dists.astype(np.float32),
         "base_labels": base_labels.astype(int),
         "base_dists": base_dists.astype(np.float32),
+        "base_dists_ica1": base_dists_ica1.astype(np.float32),
         "gate_mask": gate_mask.astype(np.int8),
+        "gate_final_mask": gate_final_mask.astype(np.int8),
+        "gate_ica1_mask": gate_ica1_mask.astype(np.int8),
+        "gate_final_only_count": int(np.sum(gate_final_mask & (~gate_ica1_mask))),
+        "gate_ica1_only_count": int(np.sum((~gate_final_mask) & gate_ica1_mask)),
+        "gate_both_count": int(np.sum(gate_final_mask & gate_ica1_mask)),
         "accepted_extra_mask": accepted_extra_mask.astype(np.int8),
     }
-
 
 def choose_unlock_option(
     Xsubset: np.ndarray,
@@ -2263,6 +2486,9 @@ def conservative_unlock(
     extra_relative_advantage: float,
     extra_radius_multiplier: float,
     random_state: int,
+    Xpre: Optional[np.ndarray] = None,
+    ica1_centroids: Optional[np.ndarray] = None,
+    ica1_base_threshold: Optional[float] = None,
 ) -> Dict[str, Any]:
     lock_res = gated_lock_assign(
         Xfinal=Xfinal,
@@ -2271,6 +2497,9 @@ def conservative_unlock(
         base_threshold=base_threshold,
         extra_accept_thresholds=extra_accept_thresholds,
         extra_relative_advantage=extra_relative_advantage,
+        Xpre=Xpre,
+        ica1_centroids=ica1_centroids,
+        ica1_base_threshold=ica1_base_threshold,
     )
     labels = lock_res["labels"].copy()
     dists = lock_res["dists"].copy()
@@ -2335,6 +2564,24 @@ def conservative_unlock(
         else:
             base_threshold_new = q_new
 
+    ica1_state = None
+    if Xpre is not None:
+        ica1_state = compute_pre_projection_gate_state(
+            Xpre_norm=Xpre,
+            labels=labels,
+            k=int(all_centroids.shape[0]),
+            unlock_q=unlock_q,
+            previous_threshold=ica1_base_threshold,
+        )
+        if bool(ica1_state["ica1_base_threshold_clamped"]):
+            log.info(
+                "ica1_base_threshold の更新幅を制限しました: raw=%.4f → adopted=%.4f (前回=%.4f, 上限±%d%%)",
+                float(ica1_state["ica1_base_threshold_raw"]),
+                float(ica1_state["ica1_base_threshold"]),
+                float(ica1_base_threshold),
+                int(DEFAULT_UNLOCK_THRESHOLD_DRIFT * 100),
+            )
+
     info = {
         "triggered": bool(triggered),
         "reason": reason,
@@ -2347,22 +2594,37 @@ def conservative_unlock(
         "base_threshold_after": float(base_threshold_new),
         "base_threshold_raw_quantile": float(base_threshold_raw),
         "base_threshold_clamped": bool(threshold_clamped),
+        "ica1_base_threshold_before": None if ica1_base_threshold is None else float(ica1_base_threshold),
+        "ica1_base_threshold_after": None if ica1_state is None else float(ica1_state["ica1_base_threshold"]),
+        "ica1_base_threshold_raw_quantile": None if ica1_state is None else float(ica1_state["ica1_base_threshold_raw"]),
+        "ica1_base_threshold_clamped": False if ica1_state is None else bool(ica1_state["ica1_base_threshold_clamped"]),
+        "gate_final_only_count": int(lock_res["gate_final_only_count"]),
+        "gate_ica1_only_count": int(lock_res["gate_ica1_only_count"]),
+        "gate_both_count": int(lock_res["gate_both_count"]),
         "protected_cluster_count": int(protected_cluster_count),
     }
     return {
         "labels": labels.astype(int),
         "dists": dists.astype(np.float32),
         "base_dists": base_dists.astype(np.float32),
+        "base_dists_ica1": lock_res["base_dists_ica1"].astype(np.float32),
         "all_centroids": all_centroids.astype(np.float32),
+        "ica1_centroids_new": None if ica1_state is None else ica1_state["ica1_centroids"].astype(np.float32),
         "extra_accept_thresholds": extra_thresholds_out,
         "base_threshold_new": float(base_threshold_new),
         "base_distance_quantiles_new": base_distance_quantiles_new,
+        "ica1_base_threshold_new": None if ica1_state is None else float(ica1_state["ica1_base_threshold"]),
+        "ica1_base_distance_quantiles_new": None if ica1_state is None else ica1_state["ica1_base_distance_quantiles"],
         "added_mask": added_mask.astype(np.int8),
         "accepted_extra_mask": accepted_extra_mask.astype(np.int8),
         "gate_mask": gate_mask.astype(np.int8),
+        "gate_final_mask": lock_res["gate_final_mask"].astype(np.int8),
+        "gate_ica1_mask": lock_res["gate_ica1_mask"].astype(np.int8),
+        "gate_final_only_count": int(lock_res["gate_final_only_count"]),
+        "gate_ica1_only_count": int(lock_res["gate_ica1_only_count"]),
+        "gate_both_count": int(lock_res["gate_both_count"]),
         "info": info,
     }
-
 
 # ---------------------------------------------------------------------------
 # smoke checks (offline internal)
@@ -2372,7 +2634,14 @@ def _smoke_internal() -> None:
     import tempfile
 
     rng = np.random.default_rng(123)
-
+    smoke_ica_retry = IcaRetryConfig(
+        max_attempts=1,
+        max_seconds=3.0,
+        max_dim_candidates=3,
+        seed_offsets=(0,),
+        algorithms=("parallel",),
+        configs=((1000, 1e-4),),
+    )
     # embedding prefix / compatibility guard
     assert resolve_embedding_prefix(None) == DEFAULT_EMBEDDING_PREFIX
     assert resolve_embedding_prefix("topic") == DEFAULT_EMBEDDING_PREFIX
@@ -2410,12 +2679,19 @@ def _smoke_internal() -> None:
         rng.normal(-2, 0.3, size=(40, 8)),
     ]).astype(np.float32)
     cache: Dict[Any, Any] = {}
-    cands = explore_candidates(X, k_min=2, k_max=6, pca_var=0.9, random_state=42, cache=cache)
+    cands = explore_candidates(X, k_min=2, k_max=4, pca_var=0.9, random_state=42, cache=cache, ica_retry_config=smoke_ica_retry)
     assert cands, "candidate search failed"
     best = cands[0]
-    fit = get_pipeline_result(X, pca_var=0.9, ica1_dim=best.ica1_dim, k=best.k, random_state=best.random_state, cache=cache)
+    fit = get_pipeline_result(X, pca_var=0.9, ica1_dim=best.ica1_dim, k=best.k, random_state=best.random_state, cache=cache, ica_retry_config=smoke_ica_retry)
     protected_count = fit["centroids"].shape[0]
     base_threshold = float(np.quantile(fit["dists"], DEFAULT_UNLOCK_Q))
+    Xpre_fit = apply_pre_projection_space(X, fit["bundle"])
+    ica1_state = compute_pre_projection_gate_state(
+        Xpre_norm=Xpre_fit,
+        labels=fit["labels"],
+        k=int(protected_count),
+        unlock_q=DEFAULT_UNLOCK_Q,
+    )
     meta = BaselineMeta(
         project="smoke",
         mode="first",
@@ -2428,6 +2704,8 @@ def _smoke_internal() -> None:
         base_threshold=base_threshold,
         extra_accept_thresholds=[],
         base_distance_quantiles=quantile_table(fit["dists"]),
+        ica1_base_threshold=float(ica1_state["ica1_base_threshold"]),
+        ica1_base_distance_quantiles=ica1_state["ica1_base_distance_quantiles"],
         unlock_q=DEFAULT_UNLOCK_Q,
         extra_relative_advantage=DEFAULT_EXTRA_REL_ADV,
         extra_radius_multiplier=DEFAULT_EXTRA_RADIUS_MULT,
@@ -2438,9 +2716,10 @@ def _smoke_internal() -> None:
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
         # v001 baseline
-        ver1 = save_baseline_version(root, "smoke", fit["bundle"], fit["centroids"], meta)
+        ver1 = save_baseline_version(root, "smoke", fit["bundle"], fit["centroids"], meta, ica1_centroids=ica1_state["ica1_centroids"])
         bundle1, cent1, meta1, _ = load_baseline_version(root, "smoke", ver1)
         Xf1 = apply_transforms(X, bundle1)
+        Xpre1 = apply_pre_projection_space(X, bundle1)
         lock1 = gated_lock_assign(
             Xfinal=Xf1,
             centroids=cent1,
@@ -2448,12 +2727,16 @@ def _smoke_internal() -> None:
             base_threshold=float(meta1["base_threshold"]),
             extra_accept_thresholds=meta1.get("extra_accept_thresholds", []),
             extra_relative_advantage=float(meta1.get("extra_relative_advantage", DEFAULT_EXTRA_REL_ADV)),
+            Xpre=Xpre1,
+            ica1_centroids=meta1.get("_runtime_ica1_centroids"),
+            ica1_base_threshold=resolve_ica1_quantile_threshold(meta1, DEFAULT_UNLOCK_Q),
         )
         assert len(lock1["labels"]) == len(X)
 
         # unlock to v002
         X2 = np.vstack([X, rng.normal(5, 0.2, size=(20, 8)).astype(np.float32)])
         Xf2 = apply_transforms(X2, bundle1)
+        Xpre2 = apply_pre_projection_space(X2, bundle1)
         un = conservative_unlock(
             Xfinal=Xf2,
             centroids=cent1,
@@ -2466,6 +2749,9 @@ def _smoke_internal() -> None:
             extra_relative_advantage=float(meta1.get("extra_relative_advantage", DEFAULT_EXTRA_REL_ADV)),
             extra_radius_multiplier=float(meta1.get("extra_radius_multiplier", DEFAULT_EXTRA_RADIUS_MULT)),
             random_state=42,
+            Xpre=Xpre2,
+            ica1_centroids=meta1.get("_runtime_ica1_centroids"),
+            ica1_base_threshold=resolve_ica1_quantile_threshold(meta1, DEFAULT_UNLOCK_Q),
         )
         assert len(un["labels"]) == len(X2)
         meta2 = BaselineMeta(
@@ -2480,6 +2766,8 @@ def _smoke_internal() -> None:
             base_threshold=float(un["base_threshold_new"]),
             extra_accept_thresholds=[float(x) for x in un["extra_accept_thresholds"]],
             base_distance_quantiles=un["base_distance_quantiles_new"],
+            ica1_base_threshold=un["ica1_base_threshold_new"],
+            ica1_base_distance_quantiles=un["ica1_base_distance_quantiles_new"],
             unlock_q=DEFAULT_UNLOCK_Q,
             extra_relative_advantage=float(meta1.get("extra_relative_advantage", DEFAULT_EXTRA_REL_ADV)),
             extra_radius_multiplier=float(meta1.get("extra_radius_multiplier", DEFAULT_EXTRA_RADIUS_MULT)),
@@ -2488,9 +2776,10 @@ def _smoke_internal() -> None:
             environment={"self_check": True},
             source_baseline=f"smoke:{ver1}",
         )
-        ver2 = save_baseline_version(root, "smoke", bundle1, un["all_centroids"], meta2)
+        ver2 = save_baseline_version(root, "smoke", bundle1, un["all_centroids"], meta2, ica1_centroids=un["ica1_centroids_new"])
         bundle2, cent2, meta_loaded2, _ = load_baseline_version(root, "smoke", ver2)
         Xf3 = apply_transforms(X2, bundle2)
+        Xpre3 = apply_pre_projection_space(X2, bundle2)
         lock2 = gated_lock_assign(
             Xfinal=Xf3,
             centroids=cent2,
@@ -2498,12 +2787,16 @@ def _smoke_internal() -> None:
             base_threshold=float(meta_loaded2["base_threshold"]),
             extra_accept_thresholds=meta_loaded2.get("extra_accept_thresholds", []),
             extra_relative_advantage=float(meta_loaded2.get("extra_relative_advantage", DEFAULT_EXTRA_REL_ADV)),
+            Xpre=Xpre3,
+            ica1_centroids=meta_loaded2.get("_runtime_ica1_centroids"),
+            ica1_base_threshold=resolve_ica1_quantile_threshold(meta_loaded2, DEFAULT_UNLOCK_Q),
         )
         assert len(lock2["labels"]) == len(X2)
 
         # baseline-from semantics: another project can load smoke baseline and lock with it
         bundle_cross, cent_cross, meta_cross, _ = load_baseline_version(root, "smoke", ver2)
         Xf_cross = apply_transforms(X2, bundle_cross)
+        Xpre_cross = apply_pre_projection_space(X2, bundle_cross)
         lock_cross = gated_lock_assign(
             Xfinal=Xf_cross,
             centroids=cent_cross,
@@ -2511,6 +2804,9 @@ def _smoke_internal() -> None:
             base_threshold=float(meta_cross["base_threshold"]),
             extra_accept_thresholds=meta_cross.get("extra_accept_thresholds", []),
             extra_relative_advantage=float(meta_cross.get("extra_relative_advantage", DEFAULT_EXTRA_REL_ADV)),
+            Xpre=Xpre_cross,
+            ica1_centroids=meta_cross.get("_runtime_ica1_centroids"),
+            ica1_base_threshold=resolve_ica1_quantile_threshold(meta_cross, DEFAULT_UNLOCK_Q),
         )
         assert len(lock_cross["labels"]) == len(X2)
 
@@ -2534,6 +2830,8 @@ def _smoke_internal() -> None:
                 protected_cluster_count=int(meta_loaded2["protected_cluster_count"]),
                 transform_mode=str(bundle2.transform_mode),
                 gate_mask=lock2["gate_mask"],
+                gate_final_mask=lock2["gate_final_mask"],
+                gate_ica1_mask=lock2["gate_ica1_mask"],
                 accepted_extra_mask=lock2["accepted_extra_mask"],
                 base_threshold=float(meta_loaded2["base_threshold"]),
                 base_dists=lock2["base_dists"],
@@ -2555,6 +2853,8 @@ def _smoke_internal() -> None:
             base_threshold=float(meta1["base_threshold"]),
             extra_accept_thresholds=[float(x) for x in meta1.get("extra_accept_thresholds", [])],
             base_distance_quantiles={str(k): float(v) for k, v in (meta1.get("base_distance_quantiles") or {}).items()},
+            ica1_base_threshold=meta1.get("ica1_base_threshold"),
+            ica1_base_distance_quantiles=meta1.get("ica1_base_distance_quantiles"),
             unlock_q=float(meta1.get("unlock_q", DEFAULT_UNLOCK_Q)),
             extra_relative_advantage=float(meta1.get("extra_relative_advantage", DEFAULT_EXTRA_REL_ADV)),
             extra_radius_multiplier=float(meta1.get("extra_radius_multiplier", DEFAULT_EXTRA_RADIUS_MULT)),
@@ -2562,14 +2862,31 @@ def _smoke_internal() -> None:
             script_version=SCRIPT_VERSION,
             environment={"self_check": True},
             source_baseline=f"smoke:{ver1}",
-        ))
+        ), ica1_centroids=meta1.get("_runtime_ica1_centroids"))
         assert ver3 == "v003"
         _, _, _, latest = load_baseline_version(root, "smoke", None)
         assert latest == "v003"
         assert list_versions(root, "smoke") == ["v001", "v002", "v003"]
 
-        # PVM Standard 6.0.0 は旧baselineを読み込まない。
-        # 旧プロジェクトは新標準でbaselineを再作成する。
+        compat20_dir = history_root(root, "compat20") / "v001"
+        ensure_dir(compat20_dir)
+        (compat20_dir / "baseline_model.npz").write_bytes((history_root(root, "smoke") / ver1 / "baseline_model.npz").read_bytes())
+        compat20_meta = asdict(meta)
+        compat20_meta.pop("ica1_base_threshold", None)
+        compat20_meta.pop("ica1_base_distance_quantiles", None)
+        _atomic_write_json(compat20_dir / "manifest.json", {
+            "schema_version": PREVIOUS_SCHEMA_VERSION,
+            "script_version": "PVM-standard-6.0.0",
+            "project": "compat20",
+            "version": "v001",
+            "meta": compat20_meta,
+        })
+        _, _, compat20_loaded, _ = load_baseline_version(root, "compat20", "v001")
+        assert bool(compat20_loaded.get("pre_projection_gate_missing"))
+        assert resolve_ica1_quantile_threshold(compat20_loaded, DEFAULT_UNLOCK_Q) is None
+
+        # PVM Standard 6.1.0 は schema 2.0 baseline のみ互換読込し、
+        # それ以前の旧baselineは新標準で再作成する。
         legacy_dir = history_root(root, "legacy") / "v001"
         ensure_dir(legacy_dir)
         (legacy_dir / "baseline_model.npz").write_bytes((history_root(root, "smoke") / ver1 / "baseline_model.npz").read_bytes())
@@ -2585,9 +2902,9 @@ def _smoke_internal() -> None:
         })
         try:
             load_baseline_version(root, "legacy", "v001")
-            raise AssertionError("legacy baseline should not load in PVM Standard 6.0.0")
+            raise AssertionError("legacy baseline should not load in PVM Standard 6.1.0")
         except RuntimeError as e:
-            assert "旧baseline" in str(e)
+            assert "schema 2.0 baseline のみ互換読込" in str(e)
 
     # threshold drift guard: a single biased unlock batch must not loosen the baseline too much
     X_far = np.array([
@@ -2613,6 +2930,63 @@ def _smoke_internal() -> None:
     assert abs(float(clamp_res["info"]["base_threshold_raw_quantile"]) - 0.5) < 1e-5
     assert abs(float(clamp_res["base_threshold_new"]) - 0.12) < 1e-6
 
+    # Noise rejection: the shared evaluation space stays conservative even when
+    # candidate-specific Centroid Projection inflates projected-space separation.
+    X_noise = rng.normal(size=(120, 32)).astype(np.float32)
+    noise_cands = explore_candidates(
+        X_noise,
+        k_min=3,
+        k_max=3,
+        pca_var=0.80,
+        random_state=13,
+        cache={},
+        ica_retry_config=smoke_ica_retry,
+    )
+    assert noise_cands[0].silhouette_eval_space < 0.15
+
+    # Candidate comparison: a clearly separated four-topic structure should not
+    # collapse to under-splitting when scored in the common evaluation space.
+    centers4 = (np.eye(4, 8, dtype=np.float32) * 4.0)
+    X4 = np.vstack([
+        centers4[i] + rng.normal(0, 0.20, size=(18, 8)).astype(np.float32)
+        for i in range(4)
+    ]).astype(np.float32)
+    k4_cands = explore_candidates(
+        X4,
+        k_min=2,
+        k_max=5,
+        pca_var=0.90,
+        random_state=17,
+        cache={},
+        ica_retry_config=smoke_ica_retry,
+    )
+    assert k4_cands[0].k == 4 or 4 in [r.k for r in k4_cands[:3]]
+
+    # Pre-projection gate: final-space assignment stays close, while ICA1-space
+    # novelty detects the orthogonal new direction.
+    gate_probe = gated_lock_assign(
+        Xfinal=np.array([[1.0, 0.0], [0.999, 0.001]], dtype=np.float32),
+        centroids=np.array([[1.0, 0.0]], dtype=np.float32),
+        protected_cluster_count=1,
+        base_threshold=0.05,
+        extra_accept_thresholds=[],
+        extra_relative_advantage=DEFAULT_EXTRA_REL_ADV,
+        Xpre=np.array([[1.0, 0.0], [0.0, 1.0]], dtype=np.float32),
+        ica1_centroids=np.array([[1.0, 0.0]], dtype=np.float32),
+        ica1_base_threshold=0.05,
+    )
+    assert int(gate_probe["gate_ica1_only_count"]) > 0
+
+    # Empty-cluster handling: simultaneous empty clusters must not reuse the
+    # same farthest row within one iteration.
+    X_empty = np.array([
+        [1.0, 0.0], [1.0, 0.0], [1.0, 0.0],
+        [-1.0, 0.0], [-1.0, 0.0], [-1.0, 0.0],
+    ], dtype=np.float32)
+    empty_res = spherical_kmeans(X_empty, k=5, random_state=0, max_iter=5)
+    events = empty_res.get("empty_reassign_events", [])
+    assert any(len(event) >= 2 for event in events)
+    assert all(len(event) == len(set(event)) for event in events)
 
 # ---------------------------------------------------------------------------
 # CLI
@@ -2784,6 +3158,8 @@ def _restore_only(result_root: Path, args: argparse.Namespace) -> None:
         base_threshold=float(meta_r["base_threshold"]),
         extra_accept_thresholds=[float(x) for x in meta_r.get("extra_accept_thresholds", [])],
         base_distance_quantiles={str(k): float(v) for k, v in (meta_r.get("base_distance_quantiles") or {}).items()},
+        ica1_base_threshold=meta_r.get("ica1_base_threshold"),
+        ica1_base_distance_quantiles=meta_r.get("ica1_base_distance_quantiles"),
         unlock_q=float(meta_r.get("unlock_q", DEFAULT_UNLOCK_Q)),
         extra_relative_advantage=float(meta_r.get("extra_relative_advantage", DEFAULT_EXTRA_REL_ADV)),
         extra_radius_multiplier=float(meta_r.get("extra_radius_multiplier", DEFAULT_EXTRA_RADIUS_MULT)),
@@ -2793,7 +3169,7 @@ def _restore_only(result_root: Path, args: argparse.Namespace) -> None:
         chosen_plan=None,
         source_baseline=f"{source_project}:{src_ver}",
     )
-    new_ver = save_baseline_version(result_root, target_project, bundle_r, centroids_r, restore_meta)
+    new_ver = save_baseline_version(result_root, target_project, bundle_r, centroids_r, restore_meta, ica1_centroids=meta_r.get("_runtime_ica1_centroids"))
     export_report(run_dir, {
         "project": target_project,
         "mode": "restore",
@@ -2938,6 +3314,13 @@ def main() -> None:
         fit = get_pipeline_result(X, args.pca_var, chosen.ica1_dim, chosen.k, chosen.random_state, cache, ica_retry_config=ica_retry_config)
         centroids = l2_normalize(fit["centroids"])  # base only on commit
         base_threshold = float(np.quantile(fit["dists"], args.unlock_q))
+        Xpre_fit = apply_pre_projection_space(X, fit["bundle"])
+        ica1_state = compute_pre_projection_gate_state(
+            Xpre_norm=Xpre_fit,
+            labels=fit["labels"],
+            k=int(centroids.shape[0]),
+            unlock_q=float(args.unlock_q),
+        )
         meta = BaselineMeta(
             project=project,
             mode="first" if not baseline_exists else "manual_commit",
@@ -2950,6 +3333,8 @@ def main() -> None:
             base_threshold=float(base_threshold),
             extra_accept_thresholds=[],
             base_distance_quantiles=quantile_table(fit["dists"]),
+            ica1_base_threshold=float(ica1_state["ica1_base_threshold"]),
+            ica1_base_distance_quantiles=ica1_state["ica1_base_distance_quantiles"],
             unlock_q=float(args.unlock_q),
             extra_relative_advantage=float(DEFAULT_EXTRA_REL_ADV),
             extra_radius_multiplier=float(DEFAULT_EXTRA_RADIUS_MULT),
@@ -2973,7 +3358,7 @@ def main() -> None:
         # Persist the committed baseline before producing reports so used_version is real.
         # This path is used by both first-run auto commit and --use-plan manual commit.
         meta = enrich_baseline_meta(meta, fit["bundle"], analysis_info)
-        ver = save_baseline_version(result_root, project, fit["bundle"], centroids, meta)
+        ver = save_baseline_version(result_root, project, fit["bundle"], centroids, meta, ica1_centroids=ica1_state["ica1_centroids"])
         export_report(run_dir, {
             "n": n,
             "project": project,
@@ -2984,6 +3369,9 @@ def main() -> None:
             "used_version": ver,
             "chosen_plan": asdict(chosen),
             "base_threshold": base_threshold,
+            "ica1_base_threshold": float(ica1_state["ica1_base_threshold"]),
+            "candidate_metric_space": "pca_l2_eval_space",
+            "projected_space_metrics": "diagnostic_only",
             "protected_cluster_count": int(centroids.shape[0]),
             "transform_mode": str(fit["bundle"].transform_mode),
             "fallback_level": int(fit["bundle"].fallback_level),
@@ -3017,6 +3405,9 @@ def main() -> None:
         validate_embedding_compat(meta_raw, args.embedding_model, embedding_prefix, args.max_len)
 
     Xfinal = apply_transforms(X, bundle)
+    Xpre = apply_pre_projection_space(X, bundle)
+    ica1_centroids_runtime = meta_raw.get("_runtime_ica1_centroids")
+    ica1_gate_threshold = resolve_ica1_quantile_threshold(meta_raw, float(args.unlock_q))
 
     if args.unlock:
         log.info("=== 実行モード: 柔軟適用（add-only unlock） ===")
@@ -3034,6 +3425,9 @@ def main() -> None:
             extra_relative_advantage=float(meta_raw.get("extra_relative_advantage", DEFAULT_EXTRA_REL_ADV)),
             extra_radius_multiplier=float(meta_raw.get("extra_radius_multiplier", DEFAULT_EXTRA_RADIUS_MULT)),
             random_state=int(args.random_state),
+            Xpre=Xpre,
+            ica1_centroids=ica1_centroids_runtime,
+            ica1_base_threshold=ica1_gate_threshold,
         )
         analysis_info = compute_run_quality(
             Xfinal=Xfinal,
@@ -3043,6 +3437,8 @@ def main() -> None:
             protected_cluster_count=int(meta_raw["protected_cluster_count"]),
             transform_mode=str(bundle.transform_mode),
             gate_mask=unlock_res["gate_mask"],
+            gate_final_mask=unlock_res["gate_final_mask"],
+            gate_ica1_mask=unlock_res["gate_ica1_mask"],
             accepted_extra_mask=unlock_res["accepted_extra_mask"],
             added_mask=unlock_res["added_mask"],
             base_threshold=float(gate_threshold),
@@ -3060,6 +3456,8 @@ def main() -> None:
             base_threshold=float(unlock_res["base_threshold_new"]),
             extra_accept_thresholds=[float(x) for x in unlock_res["extra_accept_thresholds"]],
             base_distance_quantiles=unlock_res["base_distance_quantiles_new"],
+            ica1_base_threshold=unlock_res["ica1_base_threshold_new"],
+            ica1_base_distance_quantiles=unlock_res["ica1_base_distance_quantiles_new"],
             unlock_q=float(args.unlock_q),
             extra_relative_advantage=float(meta_raw.get("extra_relative_advantage", DEFAULT_EXTRA_REL_ADV)),
             extra_radius_multiplier=float(meta_raw.get("extra_radius_multiplier", DEFAULT_EXTRA_RADIUS_MULT)),
@@ -3078,9 +3476,11 @@ def main() -> None:
             log.info("unlock 保存先: 読み込み元 baseline と同じ project に更新します (%s:%s)", baseline_project, ver)
         else:
             log.info("unlock 保存先: 読み込み元 baseline=%s:%s / 保存先 project=%s", baseline_project, ver, save_project)
-        ver2 = save_baseline_version(result_root, save_project, bundle, unlock_res["all_centroids"], new_meta)
+        ver2 = save_baseline_version(result_root, save_project, bundle, unlock_res["all_centroids"], new_meta, ica1_centroids=unlock_res["ica1_centroids_new"])
         extra_cols = {
             "gate_over_base": unlock_res["gate_mask"],
+            "gate_final": unlock_res["gate_final_mask"],
+            "gate_ica1": unlock_res["gate_ica1_mask"],
             "accepted_existing_extra": unlock_res["accepted_extra_mask"],
             "unlock_added": unlock_res["added_mask"],
         }
@@ -3096,6 +3496,10 @@ def main() -> None:
             "used_version": ver2,
             "unlock_info": unlock_res["info"],
             "gate_threshold": float(gate_threshold),
+            "ica1_gate_threshold": None if ica1_gate_threshold is None else float(ica1_gate_threshold),
+            "gate_final_only_count": int(unlock_res["gate_final_only_count"]),
+            "gate_ica1_only_count": int(unlock_res["gate_ica1_only_count"]),
+            "gate_both_count": int(unlock_res["gate_both_count"]),
             "protected_cluster_count": new_meta.protected_cluster_count,
             "base_threshold": new_meta.base_threshold,
             "extra_cluster_count": len(new_meta.extra_accept_thresholds),
@@ -3120,9 +3524,14 @@ def main() -> None:
         base_threshold=float(meta_raw["base_threshold"]),
         extra_accept_thresholds=meta_raw.get("extra_accept_thresholds", []),
         extra_relative_advantage=float(meta_raw.get("extra_relative_advantage", DEFAULT_EXTRA_REL_ADV)),
+        Xpre=Xpre,
+        ica1_centroids=ica1_centroids_runtime,
+        ica1_base_threshold=ica1_gate_threshold,
     )
     extra_cols = {
         "gate_over_base": lock_res["gate_mask"],
+        "gate_final": lock_res["gate_final_mask"],
+        "gate_ica1": lock_res["gate_ica1_mask"],
         "accepted_existing_extra": lock_res["accepted_extra_mask"],
     }
     export_run_csv(run_dir, df, keep_cols, Xfinal, lock_res["labels"], lock_res["dists"], args.max_ic_cols, extra_cols=extra_cols)
@@ -3134,6 +3543,8 @@ def main() -> None:
         protected_cluster_count=int(meta_raw["protected_cluster_count"]),
         transform_mode=str(bundle.transform_mode),
         gate_mask=lock_res["gate_mask"],
+        gate_final_mask=lock_res["gate_final_mask"],
+        gate_ica1_mask=lock_res["gate_ica1_mask"],
         accepted_extra_mask=lock_res["accepted_extra_mask"],
         base_threshold=float(meta_raw["base_threshold"]),
         base_dists=lock_res["base_dists"],
@@ -3148,6 +3559,11 @@ def main() -> None:
         "source_baseline": f"{baseline_project}:{ver}",
         "protected_cluster_count": int(meta_raw["protected_cluster_count"]),
         "base_threshold": float(meta_raw["base_threshold"]),
+        "ica1_gate_threshold": None if ica1_gate_threshold is None else float(ica1_gate_threshold),
+        "gate_final_only_count": int(lock_res["gate_final_only_count"]),
+        "gate_ica1_only_count": int(lock_res["gate_ica1_only_count"]),
+        "gate_both_count": int(lock_res["gate_both_count"]),
+        "pre_projection_gate_missing": bool(meta_raw.get("pre_projection_gate_missing", False)),
         "extra_cluster_count": len(meta_raw.get("extra_accept_thresholds", [])),
         "transform_mode": str(bundle.transform_mode),
         "ica1_status": str(bundle.ica1_status),

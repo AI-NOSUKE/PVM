@@ -8,9 +8,9 @@ PVM is not a ground-truth label reproducer. It is a practical pipeline for visua
 
 ## Evaluation Caveat
 
-PVM Standard 6.0.0 learns Centroid Projection from Cluster① in the ICA① space. Metrics computed after that projection, such as silhouette, Calinski-Harabasz, Davies-Bouldin, and entropy balance, are useful for candidate selection and quality checks.
+PVM Standard 6.1.0 keeps the 6.0.0 pipeline, but candidate-selection metrics are computed in one common evaluation space: `X_eval = l2_normalize(pca_base["Xp"])`. Candidate fields such as `silhouette_eval_space`, `ch_eval_space`, and `db_eval_space` refer to this shared space.
 
-They are not, by themselves, proof of external validity.
+Metrics computed after Centroid Projection, such as `silhouette_projected_space`, `ch_projected_space`, and `db_projected_space`, are diagnostic and interpretation aids. They are not used as standalone candidate-quality proof, because Centroid Projection is learned from Cluster① centroids.
 
 External validity should be assessed with stability checks, holdout lock behavior, and semantic coherence review. If a dataset has reliable ground-truth labels, label-based metrics can be added, but they should not be treated as the only target because PVM is designed for exploratory and operational structure building.
 
@@ -57,16 +57,18 @@ Use a table with at least the following fields.
 | embedding model | Embedding model and prefix |
 | method | Compared method |
 | k | Number of clusters |
-| silhouette | Internal separation metric |
-| Davies-Bouldin | Internal compactness/separation metric |
+| silhouette_eval_space | Cosine silhouette in the common PCA L2 evaluation space |
+| ch_eval_space | Calinski-Harabasz diagnostic in the common PCA L2 evaluation space |
+| db_eval_space | Davies-Bouldin diagnostic in the common PCA L2 evaluation space |
 | entropy balance | Cluster size balance metric |
+| silhouette_projected_space | Diagnostic only; do not treat as external validity proof |
 | stability | Seed or resampling stability summary |
 | holdout lock consistency | Whether holdout assignments remain interpretable under locked baseline |
 | qualitative coherence note | Human or LLM-assisted notes about representative examples and cluster naming |
 
 ## Interpretation Guidelines
 
-- Treat internal metrics as screening signals, not final proof.
+- Treat `*_eval_space` internal metrics as screening signals, not final proof. Treat `*_projected_space` metrics as diagnostics only.
 - Prefer methods whose clusters remain stable and interpretable under seed changes and resampling.
 - Treat holdout lock behavior as important for operational use because PVM is designed for fixed baseline workflows.
 - Clearly separate measured benchmark results from hypotheses or future evaluation plans.

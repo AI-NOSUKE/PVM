@@ -6,7 +6,7 @@
 **rank=1 が最良**で、`--use-plan N` の **N にはこの rank 値**を渡します。
 2回目以降は既存の基準に基づくロック実行がデフォルトです。`--unlock` で新話題のみを吸収して基準を拡張できます。
 
-PVM Standard 6.0.0 では内部変換を centroid projection 版に刷新しました。操作方法は従来とほぼ同じですが、旧baselineとは互換性がありません。既存プロジェクトは6.0.0でbaselineを再作成してください。
+PVM Standard 6.1.0 では、6.0.0 の centroid projection 版パイプラインを維持したまま、候補評価を全候補共通の評価空間へ移し、lock/unlock の新規性判定に ICA① 空間 gate を追加しました。schema 2.0 baseline は警告付きで読み込み可能ですが、追加 gate は使わず final空間 gate のみで動作します。重要な運用では6.1.0でbaselineを再作成してください。
 
 ## 2. 入力データ
 - 既定設定で `python PVM.py` を実行可能（必要に応じてオプションで上書き）。
@@ -70,7 +70,7 @@ python PVM.py --unlock   # アンロック（新話題のみ追加）
 - `k_candidates_stage2.csv`：候補探索で上位になったPlan TOP5の比較（ica1_dim / ic2_dim / k / 各指標）
 - `k_candidates_assignments.csv`：各候補での全テキストの割当情報
 - `結果スコア.csv`：各文のクラスタ割当、距離、IC/centroid projection成分などの指標
-- `結果レポート.json`：採用 Plan、d・K、評価指標、実行条件
+- `結果レポート.json`：採用 Plan、d・K、`silhouette_eval_space` など空間名付き評価指標、実行条件
 - `AI_解釈依頼.md`：クラスタ解釈・命名をAIに依頼するための代表文パケット
 - `AI_クラスタ一覧.csv`：クラスタごとの要約一覧
 
