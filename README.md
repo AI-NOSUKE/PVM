@@ -42,13 +42,13 @@ Embedding
 → Cluster②
 ```
 
-操作方法は従来とほぼ同じです。schema 2.0 baseline は警告付きで読み込み可能ですが、追加された ICA① 空間 gate は使われません。重要なプロジェクトでは v6.1.0 / schema 2.1 でbaselineを再作成してください。
+操作方法は従来とほぼ同じです。schema 2.0 baseline は警告付きで読み込み可能ですが、追加された ICA① 空間 gate は使われません。重要なプロジェクトでは v6.1.1 / schema 2.1 でbaselineを再作成してください。
 
-PVM Standard 6.0.0 / v6.1.0 の要点:
+PVM Standard 6.0.0 / v6.1.1 の要点:
 
 - 新標準は `Embedding → PCA → ICA① → Cluster① → Centroid Projection → Cluster②` です。
-- v6.1.0 が現行版です。PVM Standard 6.0.0 のパイプラインを維持した堅牢化アップデートです。
-- v6.1.0 の `SCRIPT_VERSION` は `PVM-standard-6.1.0`、`SCHEMA_VERSION` は `2.1` です。
+- v6.1.1 が現行版です。v6.1.0 の堅牢化内容に対する unlock再保存バグ修正です。
+- v6.1.1 の `SCRIPT_VERSION` は `PVM-standard-6.1.1`、`SCHEMA_VERSION` は `2.1` です。
 - v6.1.0 では候補選定の主指標を全候補共通の PCA L2 評価空間で計算し、射影後空間の指標は診断用に分離しています。
 - schema 2.0 baseline は警告付きで読み込み可能です。この場合、追加された ICA① 空間 gate は使わず、従来通り final空間 gate のみで動作します。
 - 評価では内部指標だけに依存せず、安定性、holdoutへのlock適用、クラスタ解釈の一貫性を確認します。
@@ -287,6 +287,8 @@ python PVM.py --use-plan 1
 PVM v6.1.0以降では、候補選定に使う silhouette、Calinski-Harabasz、Davies-Bouldin などの内部指標は、Centroid Projection後の候補固有空間ではなく、全候補で共通の評価空間（PCA後の `X_eval = l2_normalize(Xp)`）で計算します。フィールド名は `silhouette_eval_space`、`ch_eval_space`、`db_eval_space` のように空間が分かる形にしています。
 
 射影後空間の `silhouette_projected_space`、`ch_projected_space`、`db_projected_space` は、解釈・表示・診断用の指標です。Centroid Projection は Cluster① から学習されるため、射影後指標を候補選定の品質証拠や外部妥当性の証明としては扱いません。v6.1.0で silhouette 値が旧レポートより低く出る場合がありますが、これは劣化ではなく、射影後空間で膨らんでいた値を共通評価空間で保守的に測るためです。
+
+PCA/ICA①の圧縮空間の外に完全に乗る新話題は、ICA① pre-projection gateでも原理的に検出できません。これは次元圧縮を使う手法の一般的限界であり、実運用ではholdout/定期的なbaseline reviewで補います。
 
 PVMの評価では、内部指標だけでなく、次の観点を併用します。
 

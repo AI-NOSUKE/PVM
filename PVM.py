@@ -33,7 +33,7 @@ Current defaults
 - batch: 8
 """
 
-__version__ = "6.1.0"
+__version__ = "6.1.1"
 
 import argparse
 import json
@@ -90,7 +90,7 @@ except ImportError:  # pragma: no cover
 SCHEMA_VERSION = "2.1"
 PREVIOUS_SCHEMA_VERSION = "2.0"
 LEGACY_SCHEMA_VERSION = "1.1"
-SCRIPT_VERSION = "PVM-standard-6.1.0"
+SCRIPT_VERSION = "PVM-standard-6.1.1"
 DEFAULT_EMBEDDING_PREFIX = "トピック: "
 DEFAULT_MAX_LEN = 8192
 DEFAULT_BATCH = 8
@@ -1052,6 +1052,58 @@ def compute_pre_projection_gate_state(
     }
 
 
+def compute_unlock_pre_projection_gate_state(
+    Xpre_norm: np.ndarray,
+    labels: np.ndarray,
+    k: int,
+    unlock_q: float,
+    previous_centroids: Optional[np.ndarray] = None,
+    previous_threshold: Optional[float] = None,
+) -> Dict[str, Any]:
+    Xpre_n = l2_normalize(np.asarray(Xpre_norm, dtype=np.float32))
+    labels_arr = np.asarray(labels, dtype=int)
+    k = int(k)
+    dim = int(Xpre_n.shape[1])
+    centroids = np.zeros((k, dim), dtype=np.float32)
+
+    # Unlock re-save preserves existing ICA1 centroid rows from the previous
+    # baseline. Only newly appended clusters are estimated from the unlock batch.
+    preserve_count = 0
+    if previous_centroids is not None:
+        prev = np.asarray(previous_centroids, dtype=np.float32)
+        if prev.ndim == 2 and prev.shape[1] == dim and prev.shape[0] > 0:
+            prev_n = l2_normalize(prev)
+            preserve_count = min(k, int(prev_n.shape[0]))
+            centroids[:preserve_count] = prev_n[:preserve_count]
+
+    for j in range(preserve_count if preserve_count > 0 else 0, k):
+        mask = labels_arr == j
+        if not np.any(mask):
+            continue
+        c = Xpre_n[mask].mean(axis=0, dtype=np.float64)
+        norm = np.linalg.norm(c)
+        if norm > 1e-12:
+            centroids[j] = (c / norm).astype(np.float32)
+
+    dists = assigned_cosine_dists(Xpre_n, centroids, labels_arr)
+    threshold_raw = float(np.quantile(dists, float(unlock_q))) if len(dists) else float("inf")
+    threshold = threshold_raw
+    clamped = False
+    if previous_threshold is not None and math.isfinite(float(previous_threshold)) and float(previous_threshold) > 0.0:
+        lo = float(previous_threshold) * (1.0 - DEFAULT_UNLOCK_THRESHOLD_DRIFT)
+        hi = float(previous_threshold) * (1.0 + DEFAULT_UNLOCK_THRESHOLD_DRIFT)
+        threshold = float(min(max(threshold_raw, lo), hi))
+        clamped = abs(threshold - threshold_raw) > 1e-12
+    return {
+        "ica1_centroids": centroids.astype(np.float32),
+        "ica1_base_dists": dists.astype(np.float32),
+        "ica1_base_threshold": float(threshold),
+        "ica1_base_threshold_raw": float(threshold_raw),
+        "ica1_base_threshold_clamped": bool(clamped),
+        "ica1_base_distance_quantiles": quantile_table(dists),
+    }
+
+
 # ---------------------------------------------------------------------------
 # clustering
 # ---------------------------------------------------------------------------
@@ -1757,7 +1809,7 @@ def load_baseline_version(result_root: Path, project: str, version: Optional[str
     schema = str(payload.get("schema_version", ""))
     if schema not in {SCHEMA_VERSION, PREVIOUS_SCHEMA_VERSION}:
         raise RuntimeError(
-            f"baseline schema version が不一致です。PVM Standard 6.1.0 requires {SCHEMA_VERSION}; "
+            f"baseline schema version が不一致です。PVM Standard 6.1.1 requires {SCHEMA_VERSION}; "
             f"schema 2.0 baseline のみ互換読込できます。got={schema}"
         )
     bundle, centroids, ica1_centroids = _bundle_from_npz(model_path)
@@ -2370,7 +2422,9 @@ def gated_lock_assign(
             Xpre_n = l2_normalize(np.asarray(Xpre, dtype=np.float32))
             Cpre_base = l2_normalize(Cpre[:protected_cluster_count])
             D_pre = cosine_distance_to_centroids(Xpre_n, Cpre_base)
-            base_dists_ica1 = D_pre[np.arange(len(D_pre)), base_labels].astype(np.float32)
+            # ICA1 novelty is measured against the nearest protected ICA1
+            # centroid, not necessarily the final-space assigned cluster.
+            base_dists_ica1 = np.min(D_pre, axis=1).astype(np.float32)
             gate_ica1_mask = base_dists_ica1 > float(ica1_base_threshold)
 
     gate_mask = gate_final_mask | gate_ica1_mask
@@ -2566,11 +2620,12 @@ def conservative_unlock(
 
     ica1_state = None
     if Xpre is not None:
-        ica1_state = compute_pre_projection_gate_state(
+        ica1_state = compute_unlock_pre_projection_gate_state(
             Xpre_norm=Xpre,
             labels=labels,
             k=int(all_centroids.shape[0]),
             unlock_q=unlock_q,
+            previous_centroids=ica1_centroids,
             previous_threshold=ica1_base_threshold,
         )
         if bool(ica1_state["ica1_base_threshold_clamped"]):
@@ -2793,6 +2848,77 @@ def _smoke_internal() -> None:
         )
         assert len(lock2["labels"]) == len(X2)
 
+        # Biased unlock batches must not zero out protected ICA1 centroids that
+        # were absent from the batch. Existing rows are frozen and only appended
+        # clusters are estimated from the unlock batch.
+        prev_ica1_centroids = meta1.get("_runtime_ica1_centroids")
+        assert prev_ica1_centroids is not None
+        prev_ica1_centroids = np.asarray(prev_ica1_centroids, dtype=np.float32)
+        present_label = int(fit["labels"][0])
+        present_idx = np.where(np.asarray(fit["labels"], dtype=int) == present_label)[0][:12]
+        assert len(present_idx) > 0
+        X_biased = np.vstack([X[present_idx], rng.normal(5, 0.2, size=(20, 8)).astype(np.float32)]).astype(np.float32)
+        Xf_biased = apply_transforms(X_biased, bundle1)
+        Xpre_biased = apply_pre_projection_space(X_biased, bundle1)
+        biased_un = conservative_unlock(
+            Xfinal=Xf_biased,
+            centroids=cent1,
+            protected_cluster_count=int(meta1["protected_cluster_count"]),
+            base_threshold=float(meta1["base_threshold"]),
+            extra_accept_thresholds=meta1.get("extra_accept_thresholds", []),
+            unlock_q=DEFAULT_UNLOCK_Q,
+            unlock_add_k=2,
+            unlock_min_points=8,
+            extra_relative_advantage=float(meta1.get("extra_relative_advantage", DEFAULT_EXTRA_REL_ADV)),
+            extra_radius_multiplier=float(meta1.get("extra_radius_multiplier", DEFAULT_EXTRA_RADIUS_MULT)),
+            random_state=42,
+            Xpre=Xpre_biased,
+            ica1_centroids=prev_ica1_centroids,
+            ica1_base_threshold=resolve_ica1_quantile_threshold(meta1, DEFAULT_UNLOCK_Q),
+        )
+        biased_ica1 = np.asarray(biased_un["ica1_centroids_new"], dtype=np.float32)
+        assert biased_ica1.shape[0] >= prev_ica1_centroids.shape[0]
+        assert np.all(np.linalg.norm(biased_ica1[: prev_ica1_centroids.shape[0]], axis=1) > 0.5)
+        assert np.allclose(biased_ica1[: prev_ica1_centroids.shape[0]], prev_ica1_centroids, atol=1e-6)
+        biased_meta = BaselineMeta(
+            project="biased_unlock",
+            mode="unlock",
+            embedding_model="dummy",
+            embedding_prefix="",
+            max_len=128,
+            pca_var=0.9,
+            random_state=42,
+            protected_cluster_count=int(meta1["protected_cluster_count"]),
+            base_threshold=float(biased_un["base_threshold_new"]),
+            extra_accept_thresholds=[float(x) for x in biased_un["extra_accept_thresholds"]],
+            base_distance_quantiles=biased_un["base_distance_quantiles_new"],
+            ica1_base_threshold=biased_un["ica1_base_threshold_new"],
+            ica1_base_distance_quantiles=biased_un["ica1_base_distance_quantiles_new"],
+            unlock_q=DEFAULT_UNLOCK_Q,
+            extra_relative_advantage=float(meta1.get("extra_relative_advantage", DEFAULT_EXTRA_REL_ADV)),
+            extra_radius_multiplier=float(meta1.get("extra_radius_multiplier", DEFAULT_EXTRA_RADIUS_MULT)),
+            created_at=pd.Timestamp.now().isoformat(),
+            script_version=SCRIPT_VERSION,
+            environment={"self_check": True},
+            source_baseline=f"smoke:{ver1}",
+        )
+        ver_biased = save_baseline_version(root, "biased_unlock", bundle1, biased_un["all_centroids"], biased_meta, ica1_centroids=biased_un["ica1_centroids_new"])
+        bundle_biased, cent_biased, meta_biased, _ = load_baseline_version(root, "biased_unlock", ver_biased)
+        loaded_biased_ica1 = np.asarray(meta_biased.get("_runtime_ica1_centroids"), dtype=np.float32)
+        assert np.allclose(loaded_biased_ica1[: prev_ica1_centroids.shape[0]], prev_ica1_centroids, atol=1e-6)
+        lock_biased = gated_lock_assign(
+            Xfinal=apply_transforms(X, bundle_biased),
+            centroids=cent_biased,
+            protected_cluster_count=int(meta_biased["protected_cluster_count"]),
+            base_threshold=float(meta_biased["base_threshold"]),
+            extra_accept_thresholds=meta_biased.get("extra_accept_thresholds", []),
+            extra_relative_advantage=float(meta_biased.get("extra_relative_advantage", DEFAULT_EXTRA_REL_ADV)),
+            Xpre=apply_pre_projection_space(X, bundle_biased),
+            ica1_centroids=meta_biased.get("_runtime_ica1_centroids"),
+            ica1_base_threshold=resolve_ica1_quantile_threshold(meta_biased, DEFAULT_UNLOCK_Q),
+        )
+        assert int(lock_biased["gate_ica1_only_count"]) < len(X) // 2
+
         # baseline-from semantics: another project can load smoke baseline and lock with it
         bundle_cross, cent_cross, meta_cross, _ = load_baseline_version(root, "smoke", ver2)
         Xf_cross = apply_transforms(X2, bundle_cross)
@@ -2885,7 +3011,7 @@ def _smoke_internal() -> None:
         assert bool(compat20_loaded.get("pre_projection_gate_missing"))
         assert resolve_ica1_quantile_threshold(compat20_loaded, DEFAULT_UNLOCK_Q) is None
 
-        # PVM Standard 6.1.0 は schema 2.0 baseline のみ互換読込し、
+        # PVM Standard 6.1.1 は schema 2.0 baseline のみ互換読込し、
         # それ以前の旧baselineは新標準で再作成する。
         legacy_dir = history_root(root, "legacy") / "v001"
         ensure_dir(legacy_dir)
@@ -2902,7 +3028,7 @@ def _smoke_internal() -> None:
         })
         try:
             load_baseline_version(root, "legacy", "v001")
-            raise AssertionError("legacy baseline should not load in PVM Standard 6.1.0")
+            raise AssertionError("legacy baseline should not load in PVM Standard 6.1.1")
         except RuntimeError as e:
             assert "schema 2.0 baseline のみ互換読込" in str(e)
 
