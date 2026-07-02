@@ -1057,12 +1057,15 @@ def compute_unlock_pre_projection_gate_state(
     labels: np.ndarray,
     k: int,
     unlock_q: float,
+    protected_cluster_count: int,
     previous_centroids: Optional[np.ndarray] = None,
     previous_threshold: Optional[float] = None,
+    previous_distance_quantiles: Optional[Dict[str, float]] = None,
 ) -> Dict[str, Any]:
     Xpre_n = l2_normalize(np.asarray(Xpre_norm, dtype=np.float32))
     labels_arr = np.asarray(labels, dtype=int)
     k = int(k)
+    protected_n = max(0, min(int(protected_cluster_count), k))
     dim = int(Xpre_n.shape[1])
     centroids = np.zeros((k, dim), dtype=np.float32)
 
@@ -1085,22 +1088,39 @@ def compute_unlock_pre_projection_gate_state(
         if norm > 1e-12:
             centroids[j] = (c / norm).astype(np.float32)
 
+    base_mask = (labels_arr >= 0) & (labels_arr < protected_n)
+    base_present = set(int(x) for x in np.unique(labels_arr[base_mask]))
+    full_base_coverage = protected_n > 0 and all(j in base_present for j in range(protected_n))
+
     dists = assigned_cosine_dists(Xpre_n, centroids, labels_arr)
-    threshold_raw = float(np.quantile(dists, float(unlock_q))) if len(dists) else float("inf")
+    threshold_dists = dists[base_mask] if np.any(base_mask) else dists
+    threshold_raw = float(np.quantile(threshold_dists, float(unlock_q))) if len(threshold_dists) else float("inf")
     threshold = threshold_raw
     clamped = False
-    if previous_threshold is not None and math.isfinite(float(previous_threshold)) and float(previous_threshold) > 0.0:
+    updated = True
+    quantiles: Dict[str, float] = quantile_table(threshold_dists)
+
+    if not full_base_coverage and previous_threshold is not None and math.isfinite(float(previous_threshold)):
+        threshold = float(previous_threshold)
+        updated = False
+        if previous_distance_quantiles:
+            quantiles = {str(kq): float(v) for kq, v in previous_distance_quantiles.items()}
+    elif previous_threshold is not None and math.isfinite(float(previous_threshold)) and float(previous_threshold) > 0.0:
         lo = float(previous_threshold) * (1.0 - DEFAULT_UNLOCK_THRESHOLD_DRIFT)
         hi = float(previous_threshold) * (1.0 + DEFAULT_UNLOCK_THRESHOLD_DRIFT)
         threshold = float(min(max(threshold_raw, lo), hi))
         clamped = abs(threshold - threshold_raw) > 1e-12
+
     return {
         "ica1_centroids": centroids.astype(np.float32),
         "ica1_base_dists": dists.astype(np.float32),
         "ica1_base_threshold": float(threshold),
         "ica1_base_threshold_raw": float(threshold_raw),
         "ica1_base_threshold_clamped": bool(clamped),
-        "ica1_base_distance_quantiles": quantile_table(dists),
+        "ica1_base_threshold_updated": bool(updated),
+        "ica1_base_full_base_coverage": bool(full_base_coverage),
+        "ica1_base_present_labels": [int(x) for x in sorted(base_present)],
+        "ica1_base_distance_quantiles": quantiles,
     }
 
 
@@ -2543,6 +2563,7 @@ def conservative_unlock(
     Xpre: Optional[np.ndarray] = None,
     ica1_centroids: Optional[np.ndarray] = None,
     ica1_base_threshold: Optional[float] = None,
+    ica1_base_distance_quantiles: Optional[Dict[str, float]] = None,
 ) -> Dict[str, Any]:
     lock_res = gated_lock_assign(
         Xfinal=Xfinal,
@@ -2625,8 +2646,10 @@ def conservative_unlock(
             labels=labels,
             k=int(all_centroids.shape[0]),
             unlock_q=unlock_q,
+            protected_cluster_count=int(protected_cluster_count),
             previous_centroids=ica1_centroids,
             previous_threshold=ica1_base_threshold,
+            previous_distance_quantiles=ica1_base_distance_quantiles,
         )
         if bool(ica1_state["ica1_base_threshold_clamped"]):
             log.info(
@@ -2635,6 +2658,12 @@ def conservative_unlock(
                 float(ica1_state["ica1_base_threshold"]),
                 float(ica1_base_threshold),
                 int(DEFAULT_UNLOCK_THRESHOLD_DRIFT * 100),
+            )
+        elif not bool(ica1_state["ica1_base_threshold_updated"]):
+            log.info(
+                "ica1_base_threshold preserved because unlock batch did not cover all protected base labels: present=%s / protected=%d",
+                ica1_state["ica1_base_present_labels"],
+                int(protected_cluster_count),
             )
 
     info = {
@@ -2653,6 +2682,9 @@ def conservative_unlock(
         "ica1_base_threshold_after": None if ica1_state is None else float(ica1_state["ica1_base_threshold"]),
         "ica1_base_threshold_raw_quantile": None if ica1_state is None else float(ica1_state["ica1_base_threshold_raw"]),
         "ica1_base_threshold_clamped": False if ica1_state is None else bool(ica1_state["ica1_base_threshold_clamped"]),
+        "ica1_base_threshold_updated": False if ica1_state is None else bool(ica1_state["ica1_base_threshold_updated"]),
+        "ica1_base_full_base_coverage": False if ica1_state is None else bool(ica1_state["ica1_base_full_base_coverage"]),
+        "ica1_base_present_labels": [] if ica1_state is None else list(ica1_state["ica1_base_present_labels"]),
         "gate_final_only_count": int(lock_res["gate_final_only_count"]),
         "gate_ica1_only_count": int(lock_res["gate_ica1_only_count"]),
         "gate_both_count": int(lock_res["gate_both_count"]),
@@ -2860,6 +2892,7 @@ def _smoke_internal() -> None:
         X_biased = np.vstack([X[present_idx], rng.normal(5, 0.2, size=(20, 8)).astype(np.float32)]).astype(np.float32)
         Xf_biased = apply_transforms(X_biased, bundle1)
         Xpre_biased = apply_pre_projection_space(X_biased, bundle1)
+        prev_ica1_threshold = resolve_ica1_quantile_threshold(meta1, DEFAULT_UNLOCK_Q)
         biased_un = conservative_unlock(
             Xfinal=Xf_biased,
             centroids=cent1,
@@ -2874,8 +2907,12 @@ def _smoke_internal() -> None:
             random_state=42,
             Xpre=Xpre_biased,
             ica1_centroids=prev_ica1_centroids,
-            ica1_base_threshold=resolve_ica1_quantile_threshold(meta1, DEFAULT_UNLOCK_Q),
+            ica1_base_threshold=prev_ica1_threshold,
+            ica1_base_distance_quantiles=meta1.get("ica1_base_distance_quantiles"),
         )
+        assert not bool(biased_un["info"]["ica1_base_full_base_coverage"])
+        assert not bool(biased_un["info"]["ica1_base_threshold_updated"])
+        assert abs(float(biased_un["ica1_base_threshold_new"]) - float(prev_ica1_threshold)) < 1e-12
         biased_ica1 = np.asarray(biased_un["ica1_centroids_new"], dtype=np.float32)
         assert biased_ica1.shape[0] >= prev_ica1_centroids.shape[0]
         assert np.all(np.linalg.norm(biased_ica1[: prev_ica1_centroids.shape[0]], axis=1) > 0.5)
@@ -2918,6 +2955,23 @@ def _smoke_internal() -> None:
             ica1_base_threshold=resolve_ica1_quantile_threshold(meta_biased, DEFAULT_UNLOCK_Q),
         )
         assert int(lock_biased["gate_ica1_only_count"]) < len(X) // 2
+
+        # Full base coverage allows the ICA1 threshold update, with the usual
+        # drift clamp applied only in that covered case.
+        covered_state = compute_unlock_pre_projection_gate_state(
+            Xpre_norm=np.array([[1.0, 0.0], [0.5, 0.8660254], [-1.0, 0.0], [-0.5, 0.8660254]], dtype=np.float32),
+            labels=np.array([0, 0, 1, 1], dtype=int),
+            k=2,
+            unlock_q=DEFAULT_UNLOCK_Q,
+            protected_cluster_count=2,
+            previous_centroids=np.array([[1.0, 0.0], [-1.0, 0.0]], dtype=np.float32),
+            previous_threshold=0.10,
+            previous_distance_quantiles={"0.95": 0.10},
+        )
+        assert bool(covered_state["ica1_base_full_base_coverage"])
+        assert bool(covered_state["ica1_base_threshold_updated"])
+        assert bool(covered_state["ica1_base_threshold_clamped"])
+        assert abs(float(covered_state["ica1_base_threshold"]) - 0.12) < 1e-6
 
         # baseline-from semantics: another project can load smoke baseline and lock with it
         bundle_cross, cent_cross, meta_cross, _ = load_baseline_version(root, "smoke", ver2)
@@ -3554,6 +3608,7 @@ def main() -> None:
             Xpre=Xpre,
             ica1_centroids=ica1_centroids_runtime,
             ica1_base_threshold=ica1_gate_threshold,
+            ica1_base_distance_quantiles=meta_raw.get("ica1_base_distance_quantiles"),
         )
         analysis_info = compute_run_quality(
             Xfinal=Xfinal,

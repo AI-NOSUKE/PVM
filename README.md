@@ -290,6 +290,8 @@ PVM v6.1.0以降では、候補選定に使う silhouette、Calinski-Harabasz、
 
 PCA/ICA①の圧縮空間の外に完全に乗る新話題は、ICA① pre-projection gateでも原理的に検出できません。これは次元圧縮を使う手法の一般的限界であり、実運用ではholdout/定期的なbaseline reviewで補います。
 
+v6.1.1以降の novelty gate は final空間 gate と ICA① pre-projection gate のORで判定するため、学習データ自身をlockした場合でも `gate_over_rate` は従来より高く出ることがあります。これは検出感度を上げた結果であり、ただちに品質劣化を意味しません。baseline reviewでは `gate_final_only_count` / `gate_ica1_only_count` / `gate_both_count` を分けて確認してください。
+
 PVMの評価では、内部指標だけでなく、次の観点を併用します。
 
 - **安定性**：再標本化や `--random_state` 変更に対して、クラスタ構造や代表文が大きく崩れないかを確認する。
