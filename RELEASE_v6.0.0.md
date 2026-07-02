@@ -2,7 +2,7 @@
 
 ## Overview
 
-PVM Standard 6.0.0 refreshes the internal semantic-space construction used by `PVM.py` while keeping the project as a single-file local CLI.
+PVM Standard 6.0.0 is the first PVM Standard release. It formalizes the Centroid Projection pipeline as the standard PVM route while keeping `PVM.py` as a single-file local CLI.
 
 The CLI workflow remains centered on local execution, automatic input detection, candidate exploration, baseline creation, cluster lock, unlock, and history management. The main change is the standard transformation core.
 
@@ -33,24 +33,22 @@ The older `full_pvm` route used:
 PCA → ICA① → full-document second-ICA(k−1) → clustering
 ```
 
-PVM Standard 6.0.0 does not treat that old route as the standard. The new standard uses Cluster① in the ICA① space, learns a between-class centroid projection from the Cluster① centroids, and then runs Cluster②. Current v6.1.0 code can load schema 2.0 baselines with a warning, but the added ICA①-space novelty gate is unavailable for those baselines.
+PVM Standard 6.0.0 does not treat that old route as the standard. The new standard uses Cluster① in the ICA① space, learns a between-class Centroid Projection from the Cluster① centroids, and then runs Cluster②.
 
 ## Schema Version
 
 ```text
-SCHEMA_VERSION = "2.1"
-SCRIPT_VERSION = "PVM-standard-6.1.0"
+SCHEMA_VERSION = "2.0"
+SCRIPT_VERSION = "PVM-standard-6.0.0"
 ```
 
 ## Baseline Compatibility
 
-Baselines older than schema 2.0 are not compatible with the PVM Standard 6.x line.
-
-Schema 2.0 baselines can be read by v6.1.0 with a `pre_projection_gate_missing` warning. They continue with the previous final-space gate only. For the full schema 2.1 behavior, including the ICA①-space novelty gate, recreate baselines with v6.1.0.
+Existing pre-6.0 projects should recreate baselines with PVM Standard 6.0.0. This is intentional: the meaning of the stored transform is different, because the reused transform slots now store Centroid Projection parameters rather than a second ICA model.
 
 ## Evaluation Caveat
 
-In v6.1.0, candidate-selection metrics are computed in a common evaluation space (`X_eval = l2_normalize(pca_base["Xp"])`). Projected-space metrics such as `silhouette_projected_space` remain diagnostic and interpretation aids; they are not standalone proof of external validity and are not used as the primary candidate-quality evidence.
+Centroid Projection is learned from Cluster①. Therefore, internal metrics computed after projection, such as silhouette and Davies-Bouldin, are useful diagnostics and quality checks, but they are not standalone proof of external validity.
 
 Evaluation should also include:
 
@@ -64,11 +62,11 @@ See [docs/evaluation_protocol.md](docs/evaluation_protocol.md) for the proposed 
 
 ## Python Runtime Support
 
-Current code reports `PVM-standard-6.1.0` and keeps the PVM Standard 6.0.0 core pipeline. The update adds schema 2.1 metadata, common evaluation-space candidate scoring, and an ICA①-space novelty gate for lock/unlock. CI checks Python 3.13 and Python 3.14 for dependency installation, compile, version output, and self-check.
+The current repository later added Python 3.13 / 3.14 CI coverage, but this file records the PVM Standard 6.0.0 initial release. See [RELEASE_v6.1.0.md](RELEASE_v6.1.0.md) for the robustness update that followed.
 
 ## Tested Items
 
-The following checks were run during the migration and release preparation:
+The following checks were run during the 6.0.0 migration and release preparation:
 
 ```text
 python -m py_compile PVM.py
@@ -83,10 +81,10 @@ python PVM.py --input_csv <sample_with_added_rows.csv> --text_col text --project
 
 Observed results included:
 
-- version output: `PVM-standard-6.1.0`
+- version output: `PVM-standard-6.0.0`
 - candidate mode: `full_original_pvm`
 - candidate `fallback_level=0`
-- baseline metadata: `schema_version="2.1"`
+- baseline metadata: `schema_version="2.0"`
 - baseline metadata: `transform_mode="full_original_pvm"`
 - lock execution completed
 - unlock execution completed and created a new history version
