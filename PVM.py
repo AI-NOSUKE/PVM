@@ -33,12 +33,13 @@ Current defaults
 - batch: 8
 """
 
-__version__ = "6.1.1"
+__version__ = "6.1.2"
 
 import argparse
 import json
 import logging
 import math
+import os
 import platform
 import re
 import sys
@@ -90,7 +91,7 @@ except ImportError:  # pragma: no cover
 SCHEMA_VERSION = "2.1"
 PREVIOUS_SCHEMA_VERSION = "2.0"
 LEGACY_SCHEMA_VERSION = "1.1"
-SCRIPT_VERSION = "PVM-standard-6.1.1"
+SCRIPT_VERSION = "PVM-standard-6.1.2"
 DEFAULT_EMBEDDING_PREFIX = "トピック: "
 DEFAULT_MAX_LEN = 8192
 DEFAULT_BATCH = 8
@@ -210,6 +211,25 @@ def setup_logging(level: str = "INFO") -> logging.Logger:
     return logging.getLogger("PVM")
 
 
+def quiet_third_party_noise(level: str = "INFO") -> None:
+    """通常運用（INFO以上）では、外部ライブラリが出す英語の警告・注意書きを抑制する。
+
+    transformers のモデル読込メッセージ、huggingface_hub の Xet 案内、
+    torch / tokenizers の UserWarning などは、初心者にはエラーと区別が
+    つきにくい。PVM 自身のエラー処理には影響しないため、既定では隠す。
+    --log_level DEBUG のときは調査用途としてすべて表示する。
+    ICA の ConvergenceWarning はリトライ判定に使うため、ここでは触らない。
+    """
+    if getattr(logging, str(level).upper(), logging.INFO) <= logging.DEBUG:
+        return
+    # tokenizers の fork 警告（英語で長文が出る）を止める。
+    os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+    for name in ("transformers", "huggingface_hub", "torch", "urllib3"):
+        logging.getLogger(name).setLevel(logging.ERROR)
+    warnings.filterwarnings("ignore", category=FutureWarning, module=r"(transformers|torch|huggingface_hub)(\..*)?$")
+    warnings.filterwarnings("ignore", category=UserWarning, module=r"(transformers|torch)(\..*)?$")
+
+
 log = logging.getLogger("PVM")
 
 
@@ -284,7 +304,7 @@ def validate_embedding_compat(meta_raw: Dict[str, Any], embedding_model: str, em
             problems.append(f"{name}: baseline={expected!r} / current={current!r}")
     if problems:
         detail = "、".join(problems)
-        legacy_hint = "v5.6以前のbaselineの場合は、v5.7では安全のため流用できません。初回実行でbaselineを再作成してください。"
+        legacy_hint = "v5.6以前の旧baselineは、現行のPVM Standard 6系では安全のため流用できません。初回実行でbaselineを再作成してください。"
         raise SystemExit(
             "baseline の embedding 設定と現在の設定が不一致です。"
             f"同じ基準で比較するには同じ設定で実行してください: {detail}。"
@@ -324,13 +344,12 @@ def read_table(path: Path, ext: str) -> pd.DataFrame:
         except ImportError as e:
             raise RuntimeError("Excel読み込みには openpyxl が必要です。pip install openpyxl") from e
     try:
-        return pd.read_csv(path, encoding="utf-8")
+        # utf-8-sig は BOM 無しの UTF-8 も読めるため、常に先頭 BOM を安全に処理できる。
+        # 素の utf-8 で先に読むと、BOM 付き CSV の先頭列名に ﻿ が残ることがある。
+        return pd.read_csv(path, encoding="utf-8-sig")
     except UnicodeDecodeError:
-        try:
-            return pd.read_csv(path, encoding="utf-8-sig")
-        except UnicodeDecodeError:
-            log.warning("UTF-8系で読めませんでした。CP932を試します。")
-            return pd.read_csv(path, encoding="cp932")
+        log.warning("UTF-8で読めませんでした。CP932（Shift_JIS系）で再試行します。")
+        return pd.read_csv(path, encoding="cp932")
 
 
 def autodetect_columns(df: pd.DataFrame, text_col: Optional[str], id_col: Optional[str]) -> Tuple[str, Optional[str]]:
@@ -365,8 +384,12 @@ def autodetect_columns(df: pd.DataFrame, text_col: Optional[str], id_col: Option
 def get_project_name(arg_project: Optional[str], infile: Path) -> str:
     if arg_project:
         return arg_project
-    base = infile.stem or "PVM"
-    return re.sub(r"[^0-9A-Za-z一-龥ぁ-んァ-ン_-]+", "", base)
+    # NFKC 正規化で全角英数字を半角へ寄せてから、ファイルシステム的に安全な
+    # 文字だけを残す。長音記号「ー」、「ヴ/ヵ/ヶ」、踊り字「々」も日本語の
+    # ファイル名として一般的なので保持する（例:「レビュー」→「レビュー」）。
+    base = unicodedata.normalize("NFKC", infile.stem or "PVM")
+    cleaned = re.sub(r"[^0-9A-Za-z一-鿿々〆ぁ-ゖァ-ヶー_-]+", "", base)
+    return cleaned or "PVM"
 
 
 # ---------------------------------------------------------------------------
@@ -385,6 +408,15 @@ def compute_embeddings(texts: Sequence[str], model_name: str, batch: int, max_le
     import torch
     from transformers import AutoTokenizer, AutoModel
 
+    if log.getEffectiveLevel() > logging.DEBUG:
+        try:
+            # モデル読込時の「Some weights were not used...」等の英語注意書きは
+            # 正常動作でも出るため、通常運用ではエラーと紛らわしいので抑制する。
+            from transformers.utils import logging as hf_logging
+            hf_logging.set_verbosity_error()
+        except ImportError:  # pragma: no cover
+            pass
+
     if torch.cuda.is_available():
         device = "cuda"
     elif getattr(torch.backends, "mps", None) is not None and torch.backends.mps.is_available():
@@ -399,8 +431,8 @@ def compute_embeddings(texts: Sequence[str], model_name: str, batch: int, max_le
     truncated_total = 0
     show_bar = sys.stdout.isatty()
     total_docs = len(texts)
-    log.info("Embedding開始: total=%d, batch=%d, max_len=%d, prefix=%r, device=%s", total_docs, batch, max_len, embedding_prefix, device)
-    progress = tqdm(total=total_docs, desc="Embedding", unit="doc", disable=not show_bar)
+    log.info("埋め込み開始: 件数=%d, batch=%d, max_len=%d, prefix=%r, device=%s", total_docs, batch, max_len, embedding_prefix, device)
+    progress = tqdm(total=total_docs, desc="埋め込み", unit="件", disable=not show_bar)
     try:
         with torch.inference_mode():
             for i in range(0, total_docs, batch):
@@ -1079,7 +1111,7 @@ def compute_unlock_pre_projection_gate_state(
             preserve_count = min(k, int(prev_n.shape[0]))
             centroids[:preserve_count] = prev_n[:preserve_count]
 
-    for j in range(preserve_count if preserve_count > 0 else 0, k):
+    for j in range(preserve_count, k):
         mask = labels_arr == j
         if not np.any(mask):
             continue
@@ -1166,6 +1198,7 @@ def spherical_kmeans(X: np.ndarray, k: int, random_state: int, max_iter: int = 1
     if len(X) < k:
         raise ValueError("k がデータ件数以上です。")
     Xn = l2_normalize(X)
+    n = len(Xn)
     rng = np.random.default_rng(random_state)
     C = _pick_kmeanspp_rows(Xn, k, rng)
     prev_labels = None
@@ -1477,7 +1510,7 @@ def explore_candidates(
     total_plans = max(0, len(dims) * max(0, k_hi - k_lo + 1))
     show_bar = sys.stdout.isatty()
     log.info("候補探索を開始します: dims=%s, k=%d..%d, plans=%d", dims, k_lo, k_hi, total_plans)
-    progress = tqdm(total=total_plans, desc="Candidates", unit="plan", disable=not show_bar)
+    progress = tqdm(total=total_plans, desc="候補探索", unit="案", disable=not show_bar)
 
     try:
         for d in dims:
@@ -1829,8 +1862,8 @@ def load_baseline_version(result_root: Path, project: str, version: Optional[str
     schema = str(payload.get("schema_version", ""))
     if schema not in {SCHEMA_VERSION, PREVIOUS_SCHEMA_VERSION}:
         raise RuntimeError(
-            f"baseline schema version が不一致です。PVM Standard 6.1.1 requires {SCHEMA_VERSION}; "
-            f"schema 2.0 baseline のみ互換読込できます。got={schema}"
+            f"baseline schema version が不一致です。この版（{SCRIPT_VERSION}）は schema {SCHEMA_VERSION} を必要とし、"
+            f"schema 2.0 baseline のみ互換読込できます。読み込んだ schema={schema}"
         )
     bundle, centroids, ica1_centroids = _bundle_from_npz(model_path)
     meta_raw = dict(payload["meta"])
@@ -2365,7 +2398,32 @@ def quantile_table(values: np.ndarray, qs: Sequence[float] = (0.80, 0.85, 0.90, 
     return {f"{float(q):.3f}": float(np.quantile(arr, float(q))) for q in qs}
 
 
+def _stored_unlock_q_matches(meta_raw: Dict[str, Any], requested_q: float) -> bool:
+    """requested_q が baseline 保存時の unlock_q と同じかどうか。"""
+    try:
+        stored_q = float(meta_raw.get("unlock_q"))
+    except (TypeError, ValueError):
+        return False
+    return math.isfinite(stored_q) and abs(float(requested_q) - stored_q) < 1e-9
+
+
 def resolve_quantile_threshold(meta_raw: Dict[str, Any], requested_q: float) -> float:
+    """final空間 gate の閾値を解決する。
+
+    baseline 保存時と同じ quantile が要求された場合は、保存済みの採用閾値
+    `base_threshold` を正とする。unlock 時のドリフト制限（±20%クランプ）は
+    この採用閾値に適用されているため、ここを経由しないと生の分位点で
+    クランプが迂回されてしまう。
+    別の quantile を明示要求された場合のみ、生の分布記録である
+    `base_distance_quantiles` から補間する（上級者向けの明示的な上書き）。
+    """
+    if _stored_unlock_q_matches(meta_raw, requested_q):
+        try:
+            adopted = float(meta_raw.get("base_threshold"))
+            if math.isfinite(adopted):
+                return adopted
+        except (TypeError, ValueError):
+            pass
     qmap = meta_raw.get("base_distance_quantiles") or {}
     try:
         items = sorted((float(k), float(v)) for k, v in qmap.items())
@@ -2380,6 +2438,22 @@ def resolve_quantile_threshold(meta_raw: Dict[str, Any], requested_q: float) -> 
 
 
 def resolve_ica1_quantile_threshold(meta_raw: Dict[str, Any], requested_q: float) -> Optional[float]:
+    """ICA① pre-projection gate の閾値を解決する。
+
+    resolve_quantile_threshold() と同じ方針:
+    保存時と同じ quantile ならドリフト制限適用済みの `ica1_base_threshold` を正とし、
+    別の quantile を明示要求された場合のみ分位点テーブルから補間する。
+    schema 2.0 baseline など gate 情報が無い場合は None（gate 無効）を返す。
+    """
+    if _stored_unlock_q_matches(meta_raw, requested_q):
+        adopted_raw = meta_raw.get("ica1_base_threshold")
+        if adopted_raw is not None:
+            try:
+                adopted = float(adopted_raw)
+                if math.isfinite(adopted):
+                    return adopted
+            except (TypeError, ValueError):
+                pass
     qmap = meta_raw.get("ica1_base_distance_quantiles") or {}
     try:
         items = sorted((float(k), float(v)) for k, v in qmap.items())
@@ -2397,6 +2471,25 @@ def resolve_ica1_quantile_threshold(meta_raw: Dict[str, Any], requested_q: float
         return float(val)
     except (TypeError, ValueError):
         return None
+
+
+def resolve_effective_unlock_q(cli_value: Optional[float], meta_raw: Optional[Dict[str, Any]]) -> float:
+    """gate に使う quantile を「明示指定 > baseline 保存値 > 既定値」の順で解決する。
+
+    lock / unlock 時に CLI 既定値が baseline 保存値を暗黙に上書きすると、
+    final空間 gate と ICA①空間 gate の感度が食い違うため、
+    未指定時は baseline に保存された unlock_q を引き継ぐ。
+    """
+    if cli_value is not None:
+        return float(cli_value)
+    if meta_raw is not None:
+        try:
+            q = float(meta_raw.get("unlock_q", DEFAULT_UNLOCK_Q))
+            if 0.0 < q < 1.0:
+                return q
+        except (TypeError, ValueError):
+            pass
+    return DEFAULT_UNLOCK_Q
 
 def compute_extra_accept_thresholds(labels: np.ndarray, dists: np.ndarray, k: int, radius_multiplier: float) -> List[float]:
     out: List[float] = []
@@ -2661,7 +2754,7 @@ def conservative_unlock(
             )
         elif not bool(ica1_state["ica1_base_threshold_updated"]):
             log.info(
-                "ica1_base_threshold preserved because unlock batch did not cover all protected base labels: present=%s / protected=%d",
+                "ica1_base_threshold は前回値を維持しました（unlockバッチが保護対象の全baseクラスタを含まないため）: 出現クラスタ=%s / 保護対象数=%d",
                 ica1_state["ica1_base_present_labels"],
                 int(protected_cluster_count),
             )
@@ -2759,6 +2852,45 @@ def _smoke_internal() -> None:
     })
     tc, _ = autodetect_columns(df_test, None, None)
     assert tc == "textish"
+
+    # project 名の自動生成: 長音記号・ヴ・踊り字・全角英数字を壊さない
+    assert get_project_name(None, Path("レビュー.csv")) == "レビュー"
+    assert get_project_name(None, Path("ヴィンテージ調査々.xlsx")) == "ヴィンテージ調査々"
+    assert get_project_name(None, Path("ＰＶＭ２０２６.csv")) == "PVM2026"
+    assert get_project_name(None, Path("!!!.csv")) == "PVM"
+    assert get_project_name("明示指定", Path("入力.csv")) == "明示指定"
+
+    # BOM 付き CSV でも先頭列名に ﻿ が残らないこと
+    with NamedTemporaryFile("w", encoding="utf-8-sig", suffix=".csv", delete=False) as tf_bom:
+        tf_bom.write("id,text\n1,テスト文です\n")
+        bom_csv_path = Path(tf_bom.name)
+    try:
+        df_bom = read_table(bom_csv_path, "csv")
+        assert list(df_bom.columns) == ["id", "text"]
+    finally:
+        bom_csv_path.unlink(missing_ok=True)
+
+    # gate quantile の解決順序: 明示指定 > baseline 保存値 > 既定値
+    assert resolve_effective_unlock_q(None, None) == DEFAULT_UNLOCK_Q
+    assert resolve_effective_unlock_q(0.90, {"unlock_q": 0.95}) == 0.90
+    assert resolve_effective_unlock_q(None, {"unlock_q": 0.90}) == 0.90
+    assert resolve_effective_unlock_q(None, {"unlock_q": "invalid"}) == DEFAULT_UNLOCK_Q
+
+    # 閾値解決: 保存時と同じ quantile ではドリフト制限適用済みの採用閾値を正とし、
+    # 生の分位点テーブルでクランプが迂回されないこと。
+    # 別 quantile の明示指定時のみテーブルから補間する。
+    clamp_meta = {
+        "unlock_q": 0.95,
+        "base_threshold": 0.12,  # クランプ後の採用値
+        "base_distance_quantiles": {"0.900": 0.30, "0.950": 0.50, "0.990": 0.70},  # 生の分布記録
+        "ica1_base_threshold": 0.24,
+        "ica1_base_distance_quantiles": {"0.900": 0.60, "0.950": 0.80, "0.990": 0.90},
+    }
+    assert abs(resolve_quantile_threshold(clamp_meta, 0.95) - 0.12) < 1e-12
+    assert abs(resolve_quantile_threshold(clamp_meta, 0.90) - 0.30) < 1e-12
+    assert abs(resolve_ica1_quantile_threshold(clamp_meta, 0.95) - 0.24) < 1e-12
+    assert abs(resolve_ica1_quantile_threshold(clamp_meta, 0.90) - 0.60) < 1e-12
+    assert resolve_ica1_quantile_threshold({"unlock_q": 0.95}, 0.95) is None
 
     X = np.vstack([
         rng.normal(0, 0.3, size=(40, 8)),
@@ -3065,7 +3197,7 @@ def _smoke_internal() -> None:
         assert bool(compat20_loaded.get("pre_projection_gate_missing"))
         assert resolve_ica1_quantile_threshold(compat20_loaded, DEFAULT_UNLOCK_Q) is None
 
-        # PVM Standard 6.1.1 は schema 2.0 baseline のみ互換読込し、
+        # PVM Standard 6.1.x は schema 2.0 baseline のみ互換読込し、
         # それ以前の旧baselineは新標準で再作成する。
         legacy_dir = history_root(root, "legacy") / "v001"
         ensure_dir(legacy_dir)
@@ -3082,7 +3214,7 @@ def _smoke_internal() -> None:
         })
         try:
             load_baseline_version(root, "legacy", "v001")
-            raise AssertionError("legacy baseline should not load in PVM Standard 6.1.1")
+            raise AssertionError("legacy baseline should not load in PVM Standard 6.1.x")
         except RuntimeError as e:
             assert "schema 2.0 baseline のみ互換読込" in str(e)
 
@@ -3229,8 +3361,10 @@ def build_argparser() -> argparse.ArgumentParser:
 
     ap.add_argument("--unlock", dest="unlock", action="store_true", help="既存 baseline を前提に、新規話題だけ add-only で拡張します")
     ap.add_argument("--柔軟適用", dest="unlock", action="store_true")
-    ap.add_argument("--unlock-q", dest="unlock_q", type=float, default=DEFAULT_UNLOCK_Q,
-                    help="unlock 実行時に base から十分遠い点を novel 候補とみなす quantile。初回/ unlock 時の baseline threshold 更新にも使う。通常 lock は保存済み threshold を使う")
+    ap.add_argument("--unlock-q", dest="unlock_q", type=float, default=None,
+                    help="base から十分遠い点を novel 候補とみなす quantile。未指定時は baseline に保存された値"
+                         f"（初回は {DEFAULT_UNLOCK_Q}）を使う。lock / unlock とも、保存値と同じ quantile では"
+                         "ドリフト制限適用済みの採用閾値を使い、明示的に別の値を指定したときだけ分位点テーブルから補間する")
     ap.add_argument("--unlock-add-k", dest="unlock_add_k", type=int, default=2)
     ap.add_argument("--unlock-min-points", dest="unlock_min_points", type=int, default=8)
 
@@ -3321,8 +3455,8 @@ def _restore_only(result_root: Path, args: argparse.Namespace) -> None:
     if missing_embedding_meta:
         missing = ", ".join(missing_embedding_meta)
         raise BaselineSelectionError(
-            "この baseline は v5.6以前の形式です。"
-            f"v5.7 では embedding 設定({missing})を安全に確認できないため、--restore-version では復元できません。"
+            "この baseline は v5.6以前の旧形式です。"
+            f"現行のPVM Standard 6系では embedding 設定({missing})を安全に確認できないため、--restore-version では復元できません。"
             "初回実行で baseline を再作成してください。"
         )
     run_dir = next_run_dir(result_root, target_project)
@@ -3366,6 +3500,7 @@ def main() -> None:
     ap = build_argparser()
     args = ap.parse_args()
     setup_logging(args.log_level)
+    quiet_third_party_noise(args.log_level)
     ica_retry_config = build_ica_retry_config(args.ica_max_attempts, args.ica_timeout_sec)
     embedding_prefix = resolve_embedding_prefix(args.embedding_prefix)
 
@@ -3374,7 +3509,7 @@ def main() -> None:
         return
     if args.self_check:
         _smoke_internal()
-        print("self-check: ok")
+        print("self-check: ok（内部チェックはすべて合格しました）")
         return
 
     if args.show_candidates and args.unlock:
@@ -3389,7 +3524,7 @@ def main() -> None:
         raise SystemExit("--baseline-from は lock / unlock / restore でのみ指定できます。")
     if args.baseline_version and (args.show_candidates or args.use_plan is not None or args.restore_version):
         raise SystemExit("--baseline-version は lock / unlock でのみ指定できます。")
-    if not (0.0 < float(args.unlock_q) < 1.0):
+    if args.unlock_q is not None and not (0.0 < float(args.unlock_q) < 1.0):
         raise SystemExit("--unlock-q は (0, 1) の範囲で指定してください。")
 
     result_root = Path("PVMresult")
@@ -3412,19 +3547,19 @@ def main() -> None:
 
     df0 = read_table(infile, ext)
     text_col, id_col = autodetect_columns(df0, args.text_col, args.id_col)
-    log.info('columns: text_col="%s"%s', text_col, f', id_col="{id_col}"' if id_col else "")
+    log.info('使用する列: テキスト列="%s"%s', text_col, f'、ID列="{id_col}"' if id_col else "（ID列なし・自動付番）")
 
     df = df0[[c for c in [id_col, text_col] if c is not None]].copy()
     del df0
     if id_col is None:
-        df["id"] = np.arange(len(df))
+        # テキスト列を先に "text" へ寄せてから採番する。
+        # 逆順だと、テキスト列名が "id" のとき採番が本文を上書きしてしまう。
         df.rename(columns={text_col: "text"}, inplace=True)
-        keep_cols = ["id", "text"]
-        effective_text_col = "text"
+        df["id"] = np.arange(len(df))
     else:
         df.rename(columns={text_col: "text", id_col: "id"}, inplace=True)
-        keep_cols = ["id", "text"]
-        effective_text_col = "text"
+    keep_cols = ["id", "text"]
+    effective_text_col = "text"
     df["text"] = df["text"].astype(str).map(normalize_text)
     n = len(df)
     log.info("データ件数: %d", n)
@@ -3493,13 +3628,14 @@ def main() -> None:
         chosen = choose_result_by_plan(results, args.use_plan)
         fit = get_pipeline_result(X, args.pca_var, chosen.ica1_dim, chosen.k, chosen.random_state, cache, ica_retry_config=ica_retry_config)
         centroids = l2_normalize(fit["centroids"])  # base only on commit
-        base_threshold = float(np.quantile(fit["dists"], args.unlock_q))
+        commit_unlock_q = resolve_effective_unlock_q(args.unlock_q, None)
+        base_threshold = float(np.quantile(fit["dists"], commit_unlock_q))
         Xpre_fit = apply_pre_projection_space(X, fit["bundle"])
         ica1_state = compute_pre_projection_gate_state(
             Xpre_norm=Xpre_fit,
             labels=fit["labels"],
             k=int(centroids.shape[0]),
-            unlock_q=float(args.unlock_q),
+            unlock_q=commit_unlock_q,
         )
         meta = BaselineMeta(
             project=project,
@@ -3515,7 +3651,7 @@ def main() -> None:
             base_distance_quantiles=quantile_table(fit["dists"]),
             ica1_base_threshold=float(ica1_state["ica1_base_threshold"]),
             ica1_base_distance_quantiles=ica1_state["ica1_base_distance_quantiles"],
-            unlock_q=float(args.unlock_q),
+            unlock_q=commit_unlock_q,
             extra_relative_advantage=float(DEFAULT_EXTRA_REL_ADV),
             extra_radius_multiplier=float(DEFAULT_EXTRA_RADIUS_MULT),
             created_at=pd.Timestamp.now().isoformat(),
@@ -3587,19 +3723,28 @@ def main() -> None:
     Xfinal = apply_transforms(X, bundle)
     Xpre = apply_pre_projection_space(X, bundle)
     ica1_centroids_runtime = meta_raw.get("_runtime_ica1_centroids")
-    ica1_gate_threshold = resolve_ica1_quantile_threshold(meta_raw, float(args.unlock_q))
+    # gate quantile は「明示指定 > baseline 保存値 > 既定値」で解決し、
+    # final空間 gate と ICA①空間 gate で同じ quantile を使う。
+    effective_unlock_q = resolve_effective_unlock_q(args.unlock_q, meta_raw)
+    if args.unlock_q is not None and not _stored_unlock_q_matches(meta_raw, effective_unlock_q):
+        log.info(
+            "gate quantile を明示指定 q=%.3f で解決します（baseline 保存値 q=%s とは異なるため、分位点テーブルから補間します）",
+            effective_unlock_q,
+            meta_raw.get("unlock_q"),
+        )
+    ica1_gate_threshold = resolve_ica1_quantile_threshold(meta_raw, effective_unlock_q)
 
     if args.unlock:
         log.info("=== 実行モード: 柔軟適用（add-only unlock） ===")
         # ゲートに使う閾値は一度だけ解決し、品質計算とレポートにも同じ値を使う。
-        gate_threshold = resolve_quantile_threshold(meta_raw, float(args.unlock_q))
+        gate_threshold = resolve_quantile_threshold(meta_raw, effective_unlock_q)
         unlock_res = conservative_unlock(
             Xfinal=Xfinal,
             centroids=centroids,
             protected_cluster_count=int(meta_raw["protected_cluster_count"]),
             base_threshold=gate_threshold,
             extra_accept_thresholds=meta_raw.get("extra_accept_thresholds", []),
-            unlock_q=float(args.unlock_q),
+            unlock_q=effective_unlock_q,
             unlock_add_k=int(args.unlock_add_k),
             unlock_min_points=int(args.unlock_min_points),
             extra_relative_advantage=float(meta_raw.get("extra_relative_advantage", DEFAULT_EXTRA_REL_ADV)),
@@ -3639,7 +3784,7 @@ def main() -> None:
             base_distance_quantiles=unlock_res["base_distance_quantiles_new"],
             ica1_base_threshold=unlock_res["ica1_base_threshold_new"],
             ica1_base_distance_quantiles=unlock_res["ica1_base_distance_quantiles_new"],
-            unlock_q=float(args.unlock_q),
+            unlock_q=effective_unlock_q,
             extra_relative_advantage=float(meta_raw.get("extra_relative_advantage", DEFAULT_EXTRA_REL_ADV)),
             extra_radius_multiplier=float(meta_raw.get("extra_radius_multiplier", DEFAULT_EXTRA_RADIUS_MULT)),
             created_at=pd.Timestamp.now().isoformat(),
@@ -3677,6 +3822,7 @@ def main() -> None:
             "used_version": ver2,
             "unlock_info": unlock_res["info"],
             "gate_threshold": float(gate_threshold),
+            "gate_quantile": float(effective_unlock_q),
             "ica1_gate_threshold": None if ica1_gate_threshold is None else float(ica1_gate_threshold),
             "gate_final_only_count": int(unlock_res["gate_final_only_count"]),
             "gate_ica1_only_count": int(unlock_res["gate_ica1_only_count"]),
@@ -3698,11 +3844,14 @@ def main() -> None:
 
     # normal lock
     log.info("=== 実行モード: クラスターロック（baseline: %s, ver: %s） ===", baseline_project, ver)
+    # unlock と同じ解決関数を通す。保存値と同じ quantile では保存済み採用閾値と
+    # 一致し、--unlock-q を明示した場合のみ補間値になる（両 gate で対称）。
+    lock_gate_threshold = resolve_quantile_threshold(meta_raw, effective_unlock_q)
     lock_res = gated_lock_assign(
         Xfinal=Xfinal,
         centroids=centroids,
         protected_cluster_count=int(meta_raw["protected_cluster_count"]),
-        base_threshold=float(meta_raw["base_threshold"]),
+        base_threshold=lock_gate_threshold,
         extra_accept_thresholds=meta_raw.get("extra_accept_thresholds", []),
         extra_relative_advantage=float(meta_raw.get("extra_relative_advantage", DEFAULT_EXTRA_REL_ADV)),
         Xpre=Xpre,
@@ -3727,7 +3876,7 @@ def main() -> None:
         gate_final_mask=lock_res["gate_final_mask"],
         gate_ica1_mask=lock_res["gate_ica1_mask"],
         accepted_extra_mask=lock_res["accepted_extra_mask"],
-        base_threshold=float(meta_raw["base_threshold"]),
+        base_threshold=lock_gate_threshold,
         base_dists=lock_res["base_dists"],
     )
     export_report(run_dir, {
@@ -3740,6 +3889,8 @@ def main() -> None:
         "source_baseline": f"{baseline_project}:{ver}",
         "protected_cluster_count": int(meta_raw["protected_cluster_count"]),
         "base_threshold": float(meta_raw["base_threshold"]),
+        "gate_threshold": float(lock_gate_threshold),
+        "gate_quantile": float(effective_unlock_q),
         "ica1_gate_threshold": None if ica1_gate_threshold is None else float(ica1_gate_threshold),
         "gate_final_only_count": int(lock_res["gate_final_only_count"]),
         "gate_ica1_only_count": int(lock_res["gate_ica1_only_count"]),
