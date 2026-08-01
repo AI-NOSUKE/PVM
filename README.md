@@ -27,9 +27,9 @@
 
 > ※ ベクトル化（embedding）はPVM手法そのものには含まれませんが、処理の前提ステップとして 0. に記載しています。
 
-## PVM Standard 6.0.0
+## PVM Standard 6.x
 
-PVM 6.0.0 では、自由回答の意味空間生成を Standard PVM に刷新しました。
+PVM 6.0.0 で、自由回答の意味空間生成を Standard PVM に刷新しました。
 
 従来の `full_pvm` は `PCA → ICA① → 全文書 second-ICA(k−1)` を使っていましたが、6.0.0 以降は以下を標準PVMとします。
 
@@ -42,16 +42,18 @@ Embedding
 → Cluster②
 ```
 
-操作方法は従来とほぼ同じです。schema 2.0 baseline は警告付きで読み込み可能ですが、追加された ICA① 空間 gate は使われません。重要なプロジェクトでは v6.1.1 / schema 2.1 でbaselineを再作成してください。
+操作方法は従来とほぼ同じです。schema 2.0 baseline は警告付きで読み込み可能ですが、追加された ICA① 空間 gate は使われません。重要なプロジェクトでは v6.1.2 / schema 2.1 でbaselineを再作成してください。
 
-PVM Standard 6.0.0 / v6.1.1 の要点:
+PVM Standard 6.x の要点:
 
 - 新標準は `Embedding → PCA → ICA① → Cluster① → Centroid Projection → Cluster②` です。
-- v6.1.1 が現行版です。v6.1.0 の堅牢化内容に対する unlock再保存バグ修正です。
-- v6.1.1 の `SCRIPT_VERSION` は `PVM-standard-6.1.1`、`SCHEMA_VERSION` は `2.1` です。
+- **v6.1.2 が現行版**です。lock / unlock の gate 閾値解決の一貫性修正（ドリフト制限の迂回防止、baseline 保存 unlock_q の引き継ぎ）と、表示・堅牢性の改善です。
+- v6.1.1 は v6.1.0 に対する unlock再保存バグ修正でした。
+- v6.1.2 の `SCRIPT_VERSION` は `PVM-standard-6.1.2`、`SCHEMA_VERSION` は `2.1` です。schema 2.1 baseline はそのまま利用できます。
 - v6.1.0 では候補選定の主指標を全候補共通の PCA L2 評価空間で計算し、射影後空間の指標は診断用に分離しています。
 - schema 2.0 baseline は警告付きで読み込み可能です。この場合、追加された ICA① 空間 gate は使わず、従来通り final空間 gate のみで動作します。
 - 評価では内部指標だけに依存せず、安定性、holdoutへのlock適用、クラスタ解釈の一貫性を確認します。
+- [PVM Standard 6.1.2 Release Notes](./RELEASE_v6.1.2.md)
 - [PVM Standard 6.1.0 Release Notes](./RELEASE_v6.1.0.md)
 - [PVM Standard 6.0.0 Release Notes](./RELEASE_v6.0.0.md)
 
@@ -82,8 +84,8 @@ Ruri v3 のクラスタリング用途に合わせ、既定では各テキスト
 ---
 
 ## 目次
-- [概要](#概要)
-- [PVM Standard 6.0.0](#pvm-standard-600)
+- [目的と特徴](#目的と特徴)
+- [PVM Standard 6.x](#pvm-standard-6x)
 - [インストール（ローカル）](#インストールローカル)
 - [クイックスタート](#クイックスタート)
   - [① 動作確認サンプル](#①-動作確認サンプル)
@@ -100,7 +102,7 @@ Ruri v3 のクラスタリング用途に合わせ、既定では各テキスト
 
 ---
 
-## 概要
+## 目的と特徴
 - **目的**：実務で「意味が取り出しやすいクラスタ」を安定して得る。
 - **特徴**：
   - **Standard PVM 6.0.0**：PCA後のICA①空間で暫定クラスタを作り、クラスタ重心差にもとづく centroid projection で最終意味空間へ再構成する。
@@ -193,9 +195,9 @@ python PVM.py --use-plan 1
 <summary><b>参考: 別データでの実行ログ例（クリックで展開）</b></summary>
 
 ```text
-22:47:00 [INFO] [OCHIBI] columns: text_col="text"
+22:47:00 [INFO] [OCHIBI] 使用する列: テキスト列="text"（ID列なし・自動付番）
 22:47:00 [INFO] [OCHIBI] データ件数: 100
-22:50:05 [INFO] [OCHIBI] Embedding開始: total=100, batch=8, max_len=8192, prefix='トピック: ', device=cpu
+22:50:05 [INFO] [OCHIBI] 埋め込み開始: 件数=100, batch=8, max_len=8192, prefix='トピック: ', device=cpu
 22:51:06 [INFO] [OCHIBI] 初回（自動基準作成）: ベスト Plan を自動採用して baseline を作成します。
 23:34:32 [INFO] [OCHIBI] スコア出力: PVMresult/run_プロジェクト名_01/結果スコア.csv
 23:34:32 [INFO] [OCHIBI] AI向け依頼を出力: PVMresult/run_プロジェクト名_01/AI_解釈依頼.md
@@ -209,9 +211,9 @@ python PVM.py --use-plan 1
 
 `PVM.py` は、意図的に single-file local CLI として維持しています。これは未整理だからではなく、実務でのローカル利用、機密データの外部送信回避、導入の簡単さ、監査しやすさ、コピー配布しやすさを優先するための設計判断です。
 
-現行の `PVM.py` は約3200行の単一ファイルで、内部には embedding、transform、clustering、evaluation、baseline/history、lock/unlock、CLI の責務が含まれます。一般的なライブラリ設計であれば分割対象になり得ますが、PVMの標準配布形態では「1ファイルで完結し、ローカルで確認・実行できる」ことを重視しています。
+現行の `PVM.py` は約3900行の単一ファイルで、内部には embedding、transform、clustering、evaluation、baseline/history、lock/unlock、CLI の責務が含まれます。一般的なライブラリ設計であれば分割対象になり得ますが、PVMの標準配布形態では「1ファイルで完結し、ローカルで確認・実行できる」ことを重視しています。
 
-将来的にライブラリ化、PyPI化、モジュール分割を検討する余地はあります。ただし、現時点の標準は single-file CLI であり、PVM Standard 6.0.0 でもこの方針を維持します。
+将来的にライブラリ化、PyPI化、モジュール分割を検討する余地はあります。ただし、現時点の標準は single-file CLI であり、PVM Standard 6.x でもこの方針を維持します。
 
 ---
 
@@ -238,7 +240,7 @@ python PVM.py --use-plan 1
 | オプション | 説明 | デフォルト値 |
 |---|---|---|
 | `--id_col NAME` | ID列名（任意） | 内部で自動付番 |
-| `--unlock-q Q` | 新話題検出の距離分位点（0<Q<1） | 0.95 |
+| `--unlock-q Q` | 新話題検出の距離分位点（0<Q<1）。未指定時はbaseline保存値を引き継ぐ | baseline保存値（初回 0.95） |
 | `--unlock-add-k K` | 追加クラスタの上限 | 2 |
 | `--unlock-min-points N` | unlock時に新クラスタ候補として扱う最小件数 | 8 |
 | `--baseline-version vXXX` | lock / unlock 時に使用する baseline version を明示 | 最新版 |
@@ -333,5 +335,5 @@ PVM Standard 6.0.0 の有効性は、同じ入力データと同じembedding条�
 
 ## ライセンス / 作者
 
-- **License**：PVM License v1.2（詳細は `LICENSE` / `LICENSE_FAQ.md` を参照）
+- **License**：PVM License v1.2（詳細は [LICENSE](./LICENSE) / [License_FAQ.md](./License_FAQ.md) を参照）
 - **Author**：AI-NOSUKE（透明ペインター / Phantom Color Painter）

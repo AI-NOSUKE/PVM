@@ -12,7 +12,52 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # 軽量スモーク: --self-check は torch / transformers を必要としないため、
+  # コア依存だけを入れて数分で回す。バージョン範囲は requirements.txt と揃えること。
   smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.13", "3.14"]
+    env:
+      PIP_NO_INPUT: "1"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: "pip"
+
+      - name: Install core dependencies
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install \
+            "numpy>=2.1,<3" \
+            "pandas>=2.2.3,<3" \
+            "scikit-learn>=1.6,<2" \
+            "tqdm>=4.66,<5" \
+            "openpyxl>=3.1,<4"
+
+      - name: Smoke checks
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python -m py_compile PVM.py
+          VERSION="$(python PVM.py --version)"
+          test "${VERSION}" = "PVM-standard-6.1.2"
+          python PVM.py --self-check
+
+  # 依存スタック検証: requirements.txt 全体（torch CPU wheel 含む）が
+  # 対象 Python でインストール可能なことを確認する。
+  full-deps:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     strategy:
@@ -40,11 +85,11 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
 
-      - name: Smoke checks
+      - name: Smoke checks with full stack
         shell: bash
         run: |
           set -euxo pipefail
           python -m py_compile PVM.py
           VERSION="$(python PVM.py --version)"
-          test "${VERSION}" = "PVM-standard-6.1.1"
+          test "${VERSION}" = "PVM-standard-6.1.2"
           python PVM.py --self-check

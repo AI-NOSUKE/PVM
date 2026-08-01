@@ -1,7 +1,7 @@
-﻿---
+---
 name: Bug report
 about: バグ報告
-title: ""[Bug] ""
+title: "[Bug] "
 labels: bug
 ---
 ## 事象

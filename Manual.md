@@ -6,7 +6,7 @@
 **rank=1 が最良**で、`--use-plan N` の **N にはこの rank 値**を渡します。
 2回目以降は既存の基準に基づくロック実行がデフォルトです。`--unlock` で新話題のみを吸収して基準を拡張できます。
 
-PVM Standard 6.1.0 では、6.0.0 の centroid projection 版パイプラインを維持したまま、候補評価を全候補共通の評価空間へ移し、lock/unlock の新規性判定に ICA① 空間 gate を追加しました。schema 2.0 baseline は警告付きで読み込み可能ですが、追加 gate は使わず final空間 gate のみで動作します。重要な運用では6.1.0でbaselineを再作成してください。
+PVM Standard 6.1.x では、6.0.0 の centroid projection 版パイプラインを維持したまま、候補評価を全候補共通の評価空間へ移し、lock/unlock の新規性判定に ICA① 空間 gate を追加しました（6.1.0）。6.1.2 では lock / unlock の gate 閾値解決を一貫化し、unlock のドリフト制限（±20%クランプ）が分位点テーブル経由で迂回されないようにしています。schema 2.0 baseline は警告付きで読み込み可能ですが、追加 gate は使わず final空間 gate のみで動作します。重要な運用では現行版（6.1.2）でbaselineを再作成してください。
 
 ## 2. 入力データ
 - 既定設定で `python PVM.py` を実行可能（必要に応じてオプションで上書き）。
@@ -60,7 +60,7 @@ python PVM.py --unlock   # アンロック（新話題のみ追加）
 - `--input_xlsx PATH` / `--input_csv PATH`：入力データの上書き指定
 - `--text_col NAME` / `--id_col NAME`：列名を指定
 - `--k_min N` / `--k_max N`：探索する k の下限・上限（同値で固定）
-- `--unlock-q Q`：新話題検出の距離分位点（0..1）
+- `--unlock-q Q`：新話題検出の距離分位点（0<Q<1）。未指定時は baseline 保存値を引き継ぐ（初回は 0.95）
 - `--unlock-add-k K`：新規に追加する最大クラスタ数
 - `--unlock-min-points N`：unlock 時に新クラスタ候補として扱う最小件数（既定：8）
 - `--embedding_model NAME` / `--batch N` / `--max_len N` / `--pca_var R` / `--random_state S` / `--log_level LEVEL` など
@@ -82,14 +82,13 @@ python PVM.py --unlock   # アンロック（新話題のみ追加）
 - 生成物をリポジトリに含めたくない：`.gitignore` に `PVMresult/` を追加
 
 ## Appendix: ログ例（抜粋）
-- 初回 Plan 採用：
+- 初回（自動基準作成）：
 ```
-基準作成: Plan #5 を採用 → d=16, K=6
-baseline作成: PVMresult\baseline_1回目\history\v001
+[INFO] [OCHIBI] 🧭 初回（自動基準作成）: ベスト Plan を自動採用して baseline を作成します。
+[INFO] [OCHIBI] baseline 作成/更新: PVMresult/baseline_1回目/history/v001
 ```
 - アンロック：
 ```
-柔軟適用: 新話題候補 = 10 件（q=0.90）
-柔軟適用: 追加セントロイド = 2 個
-柔軟適用: 追加後の基準を保存しました → PVMresult\baseline_2回目\history\v001
+[INFO] [OCHIBI] === 実行モード: 柔軟適用（add-only unlock） ===
+[INFO] [OCHIBI] unlock baseline 更新: PVMresult/baseline_2回目/history/v002
 ```

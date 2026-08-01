@@ -1,7 +1,7 @@
-﻿---
+---
 name: Feature request
 about: 機能要望
-title: ""[Feat] ""
+title: "[Feat] "
 labels: enhancement
 ---
 ## 背景
