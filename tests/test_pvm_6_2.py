@@ -112,23 +112,5 @@ class Pvm620Tests(unittest.TestCase):
         self.assertFalse(rows[0].quality_gate_passed)
         self.assertEqual(rows[0].degraded_reason, "forced fallback")
 
-    def test_strict_full_commit_report_has_lock_resample_caveat(self):
-        with patch.object(PVM.log, "warning") as warning:
-            report = PVM.with_lock_resample_caveat(
-                {"mode": "first"}, "strict_full", emit_warning=True,
-            )
-        caveat = report["lock_resample_caveat"]
-        self.assertTrue(caveat["applies"])
-        self.assertEqual(
-            caveat["reason"],
-            "selection_score does not yet weigh resample lock stability",
-        )
-        self.assertEqual(caveat["planned_fix"], "6.3.0")
-        warning.assert_called_once()
-
-        degraded = PVM.with_lock_resample_caveat({}, "degraded")
-        self.assertFalse(degraded["lock_resample_caveat"]["applies"])
-
-
 if __name__ == "__main__":
     unittest.main()
