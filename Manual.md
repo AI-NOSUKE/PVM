@@ -1,12 +1,14 @@
 # PVM Manual
 
+[トップ](./README.md) · [評価手順](./docs/evaluation_protocol.md) · [利用条件FAQ](./docs/USAGE_FAQ.md) · [LICENSE](./LICENSE)
+
 ## 1. 概要
 高次元のテキスト埋め込みを **PCA → ICA① → Cluster① → Centroid Projection → Cluster②** で整理します。
 初回は候補（k と ICA 次元の組み合わせ）を探索し、ベストPlanを自動採用してbaselineを作成します。
 **rank=1 が最良**で、`--use-plan N` の **N にはこの rank 値**を渡します。
 2回目以降は既存の基準に基づくロック実行がデフォルトです。`--unlock` で新話題のみを吸収して基準を拡張できます。
 
-現行版は **PVM Standard 6.2.2** です。6.2.0でICA①次元とクラスタ数の探索を拡張し、Centroid Projectionが実際に圧縮した候補と、ICA①の意味軸を確認できる出力を追加しました。6.2.1では日本語WindowsのUTF-8起動を自動化し、6.2.2では同名projectのbaselineだけを自動読込するよう選択ルールを明確化しました。別名baselineを使う場合は`--baseline-from NAME`で明示します。baseline schemaは2.1のままです。schema 2.0 baselineも警告付きで読み込めますが、ICA①空間gateは使われません。
+現行のbaseline schemaは **2.1** です。ICA①の意味軸とCentroid Projection後の境界整理空間を分けて出力します。baselineは現在のprojectと同名のものだけを自動読込し、別名のbaselineを使う場合は `--baseline-from NAME` で明示します。実行中の版は `python PVM.py --version` で確認できます。
 
 ## 2. 入力データ
 - 既定設定で `python PVM.py` を実行可能（必要に応じてオプションで上書き）。

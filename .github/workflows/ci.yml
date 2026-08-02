@@ -11,6 +11,9 @@ concurrency:
   group: pvm-ci-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  PVM_EXPECTED_VERSION: "PVM-standard-6.2.3"
+
 jobs:
   # 軽量スモーク: --self-check は torch / transformers を必要としないため、
   # コア依存だけを入れて数分で回す。バージョン範囲は requirements.txt と揃えること。
@@ -52,7 +55,8 @@ jobs:
           set -euxo pipefail
           python -m py_compile PVM.py
           VERSION="$(python PVM.py --version)"
-          test "${VERSION}" = "PVM-standard-6.2.2"
+          test "${VERSION}" = "${PVM_EXPECTED_VERSION}"
+          python -m unittest discover -s tests -p "test_pvm_6_2.py" -v
           python PVM.py --self-check
 
   # 依存スタック検証: requirements.txt 全体（torch CPU wheel 含む）が
@@ -91,5 +95,6 @@ jobs:
           set -euxo pipefail
           python -m py_compile PVM.py
           VERSION="$(python PVM.py --version)"
-          test "${VERSION}" = "PVM-standard-6.2.2"
+          test "${VERSION}" = "${PVM_EXPECTED_VERSION}"
+          python -m unittest discover -s tests -p "test_pvm_6_2.py" -v
           python PVM.py --self-check
