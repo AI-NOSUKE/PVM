@@ -101,7 +101,7 @@ Ruri v3 のクラスタリング用途に合わせ、既定では各テキスト
 - [出力ファイル](#出力ファイル)
 - [運用の目安と再現性](#運用の目安と再現性)
 - [評価上の注意](#評価上の注意)
-- [今後のベンチマーク方針](#今後のベンチマーク方針)
+- [ベンチマーク方針](#ベンチマーク方針)
 - [学術背景（要点）](#学術背景要点)
 - [ライセンス / 作者](#ライセンス--作者)
 
@@ -110,7 +110,7 @@ Ruri v3 のクラスタリング用途に合わせ、既定では各テキスト
 ## 目的と特徴
 - **目的**：実務で「意味が取り出しやすいクラスタ」を安定して得る。
 - **特徴**：
-  - **Standard PVM 6.0.0**：PCA後のICA①空間で暫定クラスタを作り、クラスタ重心差にもとづく centroid projection で最終意味空間へ再構成する。
+  - **Standard PVM 6.x**：PCA後のICA①空間で暫定クラスタを作り、クラスタ重心差にもとづく centroid projection で最終意味空間へ再構成する。
   - **候補→採用→ロック/アンロック**の一連フローをコマンドで直感操作。  
   - **Cluster Lock**：解釈済みクラスタをロックして、別データへの再適用や比較分析が可能。  
   - **再現配慮**：乱数シード・baselineロック・ログ出力で運用を安定化。
@@ -127,11 +127,13 @@ git clone https://github.com/AI-NOSUKE/PVM.git
 cd PVM
 py -3.14 -m venv .venv   # Windows
 # python3.14 -m venv .venv # macOS/Linux
-.\.venv\Scripts\activate    # Windows
+.\.venv\Scripts\Activate.ps1 # Windows PowerShell
 # source .venv/bin/activate # macOS/Linux
-pip install -r requirements.txt
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
 ```
-- 推奨環境は Python 3.14 です。互換性確認として、CIでは Python 3.13 / 3.14 の両方で依存関係のインストール、`py_compile`、`--version`、`--self-check` を実行しています。初回は埋め込みモデル取得で少し時間がかかることがあります。
+- 推奨環境は Python 3.14 です。互換性確認として、CIでは Python 3.13 / 3.14 の両方で依存関係のインストール、`py_compile`、`--version`、`--self-check` を実行しています。初回はRuri v3モデル（1GB超）をダウンロードするため、ネットワーク接続が必要で時間がかかることがあります。
+- 日本語Windowsで`PVM.py`を直接実行すると、必要な場合だけPythonをUTF-8モードで自動的に起動し直します。通常の実行コマンドを変更する必要はありません。別のPythonスクリプトから`import PVM`してRuri埋め込みを使う場合は、呼び出し元を`python -X utf8 your_script.py ...`で起動してください。
 - Python 3.14対応に伴い依存ライブラリを更新しています。PVM Standard 6.0.0のアルゴリズム仕様は維持していますが、旧依存環境で作成したbaselineと完全な数値一致を保証するものではありません。重要なプロジェクトでは、Python 3.14環境でbaselineを再作成することを推奨します。
 
 ---
@@ -159,6 +161,8 @@ python PVM.py --input_csv examples/sample_texts.csv --show-candidates
 # 候補から明示採用したい場合
 python PVM.py --input_csv examples/sample_texts.csv --use-plan 1
 ```
+
+`examples/sample_texts.csv`は50件の動作確認用データです。処理経路と出力の確認には使えますが、クラスタ品質の判定には小さすぎます。`degraded`やbaseline見直しの警告が出ても、サンプルでの動作確認自体が失敗したという意味ではありません。実データでは100件以上を目安にしてください。
 
 インストール後の軽量チェック（埋め込みモデル不要）:
 
@@ -228,12 +232,12 @@ python PVM.py --use-plan 1
 |---|---|---|
 | *(無指定)* | 既存の基準でロック適用。**初回は自動採用で基準作成** | - |
 | `--show-candidates` | 候補のみ出力（基準は作らない） | - |
-| `--use-plan N` | 候補の **rank=N** を採用して基準作成 | 1（最良） |
+| `--use-plan N` | 候補の **rank=N** を採用して基準作成。rank=1が最良 | 未指定（無指定実行では最良Planを自動採用） |
 | `--unlock` | 柔軟適用：新話題を追加クラスタで吸収 | - |
 | `--baseline-from NAME` | 他プロジェクトの基準を流用してロック/アンロック | - |
 | `--input_csv PATH` / `--input_xlsx PATH` | 入力データの指定 | 自動検出※ |
 | `--text_col NAME` | テキスト列名 | 自動検出※※ |
-| `--project NAME` | 出力の保存先名（例：`1回目` / `2回目`） | 入力ファイル名 |
+| `--project NAME` | 分析とbaselineを識別する名前（例：`顧客アンケート`）。同じbaselineで初回・lock・unlockを行う間は同じ名前を使う | 入力ファイル名 |
 
 > ※ 入力ファイル未指定時：`入力.xlsx` / `入力.csv` を優先、なければ最新のExcel/CSVを使用  
 > ※※ テキスト列未指定時：`text` / `テキスト` / `本文` などを優先、なければ最長列を使用
@@ -285,7 +289,8 @@ python PVM.py --use-plan 1
 - **データ件数**：最低3件以上必要、30件以下では候補探索が粗くなります。十分な件数（100件以上）を推奨。  
 - **初回の自動採用**：無指定で走らせると自動採用で基準作成。意図を固定したい場合は `--show-candidates` → `--use-plan N` を明示。  
 - **再現性**：`--random_state` の固定 + **baselineロック** 運用を推奨。  
-- **PVM 6.1.0 baseline**：schema 2.0 baseline は警告付きで読み込み可能ですが、ICA① 空間 gate は使われません。schema 1.1 など旧baselineは再作成してください。
+- **project名**：同じ分析の初回・lock・unlockでは同じ`--project`を使います。別の分析だけ別名にしてください。実行回ごとに`1回目`、`2回目`と変える用途ではありません。
+- **旧baseline互換性**：schema 2.0 baseline は警告付きで読み込み可能ですが、ICA① 空間 gate は使われません。schema 1.1 など旧baselineは再作成してください。
 - **baselineの優先度**：`--baseline-from` ＞ 現在プロジェクトの baseline ＞ フォルダ内に baseline が1系列だけならそれを自動採用。複数ある場合は誤適用を避けるため明示指定が必要です。
 - **モデル依存**：埋め込みモデル、embedding prefix、max_len を変えると軸解釈が変わります。一貫性のため同一設定での運用を推奨。
 - **プロジェクト分離**：異なる分析は `--project` で分けることで、基準の混在を防げます。
@@ -314,13 +319,13 @@ PVMは「正解ラベル再現器」ではありません。自由回答の意�
 
 ---
 
-## 今後のベンチマーク方針
+## ベンチマーク方針
 
-PVM Standard 6.0.0 の有効性は、同じ入力データと同じembedding条件のもとで、複数の比較対象と並べて検証します。少なくとも以下をベンチマーク候補とします。
+PVM Standard 6.x（現行版6.2.1）の有効性は、同じ入力データと同じembedding条件のもとで、複数の比較対象と並べて検証します。少なくとも以下を比較対象とします。
 
 - embedding + spherical k-means
 - PCA → ICA① + spherical k-means
-- PVM Standard 6.0.0
+- PVM Standard 6.xの現行版
 - 必要に応じてBERTopic等の既存トピックモデリング手法
 
 比較では、内部指標の順位だけでなく、seed変更時の安定性、holdoutへのlock適用、クラスタ名の付けやすさ、代表文の読みやすさ、実務上の再利用しやすさを合わせて確認します。
@@ -337,7 +342,7 @@ PVM Standard 6.0.0 の有効性は、同じ入力データと同じembedding条�
 - **spherical k-means**：L2正規化した最終空間で、cosine 距離に基づいてクラスタを確定。
 - **候補評価**：複数の ICA① 次元・クラスタ数を探索し、全候補共通の PCA L2 評価空間で分離指標を計算する。Centroid Projection後の指標は診断用として分離し、Plan選定の主証拠にはしない。
 
-この **ICA① + centroid projection + spherical k-means** により、単段階よりも**解釈しやすい軸**と**安定したクラスタ**が得られやすく、マーケティング活用（命名・要約・示唆抽出）で効果を発揮します。
+この **ICA① + centroid projection + spherical k-means** は、単段階よりも**解釈しやすい軸**と**運用しやすいクラスタ**を得ることを狙った構成です。効果はデータごとに異なるため、内部指標だけで決めず、seed安定性、holdout lock、代表文の読みやすさを併せて確認します。
 
 ---
 

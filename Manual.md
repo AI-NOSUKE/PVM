@@ -6,12 +6,12 @@
 **rank=1 が最良**で、`--use-plan N` の **N にはこの rank 値**を渡します。
 2回目以降は既存の基準に基づくロック実行がデフォルトです。`--unlock` で新話題のみを吸収して基準を拡張できます。
 
-PVM Standard 6.1.x では、6.0.0 の centroid projection 版パイプラインを維持したまま、候補評価を全候補共通の評価空間へ移し、lock/unlock の新規性判定に ICA① 空間 gate を追加しました（6.1.0）。6.1.2 では lock / unlock の gate 閾値解決を一貫化し、unlock のドリフト制限（±20%クランプ）が分位点テーブル経由で迂回されないようにしています。schema 2.0 baseline は警告付きで読み込み可能ですが、追加 gate は使わず final空間 gate のみで動作します。重要な運用では現行版（6.1.2）でbaselineを再作成してください。
+現行版は **PVM Standard 6.2.1** です。6.2.0でICA①次元とクラスタ数の探索を拡張し、Centroid Projectionが実際に圧縮した候補と、ICA①の意味軸を確認できる出力を追加しました。6.2.1では日本語WindowsでのRuri読込時に必要なUTF-8モードを、`PVM.py`の直接実行時に自動で扱います。探索、lock/unlock、baseline schema 2.1は6.2.0から変更していません。schema 2.0 baselineも警告付きで読み込めますが、ICA①空間gateは使われません。
 
 ## 2. 入力データ
 - 既定設定で `python PVM.py` を実行可能（必要に応じてオプションで上書き）。
 - 対応形式：Excel（`.xlsx`）/ CSV（UTF-8 推奨）
-- 最低限の列：`text`（テキスト本文）
+- 最低限必要なもの：テキスト本文を含む列（列名は`text`推奨）
   - 例：
     | id | text               |
     |----|--------------------|
@@ -20,9 +20,25 @@ PVM Standard 6.1.x では、6.0.0 の centroid projection 版パイプライン�
 > 備考：列名が異なる場合は `--text_col` で指定可能。
 
 ## 3. インストール
-```bash
-pip install -r requirements.txt
+```powershell
+git clone https://github.com/AI-NOSUKE/PVM.git
+cd PVM
+py -3.14 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
 ```
+
+macOS/Linuxでは次のコマンドを使います。
+
+```bash
+python3.14 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+```
+
+初回はRuri v3モデル（1GB超）のダウンロードにネットワーク接続と時間が必要です。
 
 ## 4. 実行フロー（典型パターン）
 ### 4.1 初回：自動でbaseline作成
@@ -56,10 +72,13 @@ python PVM.py --unlock   # アンロック（新話題のみ追加）
 - `--baseline-from NAME` / `--基準流用 NAME`：他プロジェクトの基準を参照
 - `--baseline-version vXXX`：lock / unlock 時に使用する baseline version を明示（既定：最新版）
 - `--restore-version vXXX`：指定 version を復元保存して終了
-- `--project NAME`：保存先のプロジェクト名（例：`1回目` / `2回目`）
+- `--project NAME`：分析とbaselineを識別する名前（例：`顧客アンケート`）。同じ分析の初回・lock・unlockでは同じ名前を使う
 - `--input_xlsx PATH` / `--input_csv PATH`：入力データの上書き指定
 - `--text_col NAME` / `--id_col NAME`：列名を指定
 - `--k_min N` / `--k_max N`：探索する k の下限・上限（同値で固定）
+- `--search-budget fast|standard|thorough`：初回探索の計算予算（既定：`standard`）
+- `--include-ica1-cols`：`結果スコア.csv`へICA①座標も追加
+- `--max-cp-cols N`：`結果スコア.csv`へ出力するCP座標列の上限
 - `--unlock-q Q`：新話題検出の距離分位点（0<Q<1）。未指定時は baseline 保存値を引き継ぐ（初回は 0.95）
 - `--unlock-add-k K`：新規に追加する最大クラスタ数
 - `--unlock-min-points N`：unlock 時に新クラスタ候補として扱う最小件数（既定：8）
@@ -67,9 +86,10 @@ python PVM.py --unlock   # アンロック（新話題のみ追加）
 
 ## 6. 出力ファイル
 - `k_candidates.csv`：全候補評価（rank=1 が最良）
-- `k_candidates_stage2.csv`：候補探索で上位になったPlan TOP5の比較（ica1_dim / ic2_dim / k / 各指標）
+- `k_candidates_stage2.csv`：候補探索で上位になったPlan TOP5の比較（`ica1_dim` / CP後次元を表す互換フィールド`ic2_dim` / `k` / 各指標）
 - `k_candidates_assignments.csv`：各候補での全テキストの割当情報
-- `結果スコア.csv`：各文のクラスタ割当、距離、IC/centroid projection成分などの指標
+- `結果スコア.csv`：各文のクラスタ割当、距離、CP後座標（`CP1...`）。`--include-ica1-cols`指定時はICA①座標（`ICA1_1...`）も追加
+- `ICA軸レポート.md`：ICA①の正負の代表文を示す意味軸確認用レポート（初回baselineで出力）
 - `結果レポート.json`：採用 Plan、d・K、`silhouette_eval_space` など空間名付き評価指標、実行条件
 - `AI_解釈依頼.md`：クラスタ解釈・命名をAIに依頼するための代表文パケット
 - `AI_クラスタ一覧.csv`：クラスタごとの要約一覧
@@ -78,17 +98,19 @@ python PVM.py --unlock   # アンロック（新話題のみ追加）
 - 列名が違う場合：`--text_col` で指定
 - 微小なスコア誤差（±1e-5 程度）：浮動小数点の丸めによるもので正常
 - 再現性を高めたい：`--random_state` を固定
-- 出力を分けたい：`--project` で保存先を分ける
+- 同じbaselineで継続したい：初回・lock・unlockで同じ`--project`を使う
+- 別の分析として出力を分けたい：別の`--project`名を使う
+- 50件の同梱サンプルで`degraded`警告が出る：動作確認用として小さいためです。品質判断には100件以上の実データを推奨します
 - 生成物をリポジトリに含めたくない：`.gitignore` に `PVMresult/` を追加
 
 ## Appendix: ログ例（抜粋）
 - 初回（自動基準作成）：
 ```
 [INFO] [OCHIBI] 🧭 初回（自動基準作成）: ベスト Plan を自動採用して baseline を作成します。
-[INFO] [OCHIBI] baseline 作成/更新: PVMresult/baseline_1回目/history/v001
+[INFO] [OCHIBI] baseline 作成/更新: PVMresult/baseline_顧客アンケート/history/v001
 ```
 - アンロック：
 ```
 [INFO] [OCHIBI] === 実行モード: 柔軟適用（add-only unlock） ===
-[INFO] [OCHIBI] unlock baseline 更新: PVMresult/baseline_2回目/history/v002
+[INFO] [OCHIBI] unlock baseline 更新: PVMresult/baseline_顧客アンケート/history/v002
 ```
