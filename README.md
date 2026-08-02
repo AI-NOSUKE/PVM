@@ -3,7 +3,9 @@
 ![license](https://img.shields.io/badge/License-PVM%20v1.3%20source--available-orange)
 ![ci](https://github.com/AI-NOSUKE/PVM/actions/workflows/ci.yml/badge.svg)
 
-> **License:** 本リポジトリはソースコードを公開していますが、OSSではありません。非商用の個人利用・学術研究・教育・条件内のPoCは無償です。商用利用には事前の有償ライセンス契約が必要で、年額75万円／200万円／400万円のプランがあります。コードおよび改変版の再配布は禁止しています。詳細は[LICENSE](./LICENSE)を確認してください。
+PVMは、日本語の自由記述テキストを意味軸とクラスタ構造に整理する Python ツールです。
+
+> **License:** source-available（非OSS）です。非商用の個人利用・学術研究・教育・条件内のPoCは無償、商用利用には有償ライセンスが必要です。詳細は [LICENSE](./LICENSE) と [利用条件FAQ](./docs/USAGE_FAQ.md) を確認してください。
 
 **ドキュメント:** [クイックスタート](#クイックスタート) · [操作マニュアル](./Manual.md) · [評価手順](./docs/evaluation_protocol.md) · [利用条件FAQ](./docs/USAGE_FAQ.md) · [資料一覧](./docs/README.md)
 
