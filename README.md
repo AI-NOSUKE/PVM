@@ -1,6 +1,6 @@
 # PVM (Phantom Vector Mapping)
 ![python](https://img.shields.io/badge/python-3.13%20%7C%203.14-blue)
-![license](https://img.shields.io/badge/License-PVM%20v1.3-source--available-orange)
+![license](https://img.shields.io/badge/License-PVM%20v1.3%20source--available-orange)
 ![ci](https://github.com/AI-NOSUKE/PVM/actions/workflows/ci.yml/badge.svg)
 
 > **License:** 本リポジトリはソースコードを公開していますが、OSSではありません。非商用の個人利用・学術研究・教育・条件内のPoCは無償です。商用利用には事前の有償ライセンス契約が必要で、年額75万円／200万円／400万円のプランがあります。コードおよび改変版の再配布は禁止しています。詳細は[LICENSE](./LICENSE)を確認してください。
