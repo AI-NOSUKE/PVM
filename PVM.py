@@ -33,7 +33,7 @@ Current defaults
 - batch: 8
 """
 
-__version__ = "6.2.1"
+__version__ = "6.2.2"
 
 import argparse
 import json
@@ -145,7 +145,7 @@ except ImportError:  # pragma: no cover
 SCHEMA_VERSION = "2.1"
 PREVIOUS_SCHEMA_VERSION = "2.0"
 LEGACY_SCHEMA_VERSION = "1.1"
-SCRIPT_VERSION = "PVM-standard-6.2.1"
+SCRIPT_VERSION = "PVM-standard-6.2.2"
 DEFAULT_EMBEDDING_PREFIX = "トピック: "
 DEFAULT_MAX_LEN = 8192
 DEFAULT_BATCH = 8
@@ -2131,12 +2131,13 @@ def resolve_default_baseline_project(
     explicit_project: Optional[str] = None,
 ) -> Tuple[str, bool, str]:
     """
-    baseline 自動選択ルール（元のPVM寄り）
+    baseline 自動選択ルール
     1) --baseline-from 指定があればそれを使う
     2) 現在 project の baseline があればそれを使う
-    3) フォルダ内に baseline が 1 系列だけあればそれを使う
-    4) フォルダ内に baseline が複数あれば明示指定を要求
-    5) baseline がなければ current_project を返し、exists=False
+    3) 同名 baseline がなければ current_project の新規解析として扱う
+
+    別名 baseline は、フォルダ内に1系列だけでも暗黙採用しない。
+    意図的に流用するときだけ --baseline-from で指定する。
     """
     if explicit_project:
         return explicit_project, has_baseline(result_root, explicit_project), "explicit"
@@ -2144,15 +2145,7 @@ def resolve_default_baseline_project(
     if has_baseline(result_root, current_project):
         return current_project, True, "project"
 
-    candidates = list_baseline_projects(result_root)
-    if len(candidates) == 1:
-        return candidates[0], True, "single_in_folder"
-    if len(candidates) == 0:
-        return current_project, False, "none"
-
-    raise BaselineSelectionError(
-        "フォルダ内に baseline が複数あります。--baseline-from で使用する baseline を指定してください。"
-    )
+    return current_project, False, "none"
 
 
 def _atomic_write_json(path: Path, payload: Dict[str, Any]) -> None:
@@ -3876,8 +3869,8 @@ def build_argparser() -> argparse.ArgumentParser:
         description=(
             "PVM single-file production edition. "
             "未指定実行では入力ファイルを自動検出し、baseline 自動選択ルールは "
-            "1) --baseline-from 指定 2) 現在 project の baseline 3) フォルダ内 baseline が1系列だけならそれ "
-            "4) 複数あるなら明示指定要求 です。"
+            "1) --baseline-from 指定 2) 現在 project と同名の baseline です。"
+            "別名 baseline は自動採用しません。"
         ),
         epilog=(
             "よく使う実行例:\n"
@@ -3890,7 +3883,7 @@ def build_argparser() -> argparse.ArgumentParser:
             "      → 既存クラスタは守ったまま、新規話題だけ追加（add-only）します\n"
             "  候補を眺めるだけ       : python %(prog)s --show-candidates\n"
             "  気に入った候補を採用   : python %(prog)s --use-plan 2\n"
-            "  過去の版に戻す         : python %(prog)s --restore-version v002\n"
+            "  過去の版に戻す         : python %(prog)s --project NAME --restore-version v002\n"
             "\n"
             "結果は PVMresult/ 以下に出力されます。困ったら --log_level DEBUG で詳細を確認できます。"
         ),
@@ -3918,12 +3911,12 @@ def build_argparser() -> argparse.ArgumentParser:
     ap.add_argument("--use-plan", dest="use_plan", type=int, default=None, help="候補探索結果の plan 番号を採用して baseline を作成/更新します")
     ap.add_argument("--採用プラン", dest="use_plan", type=int, default=None)
     ap.add_argument("--baseline-from", dest="baseline_from", type=str, default=None,
-                    help="別 project の baseline を参照して lock / unlock / restore するときに指定。未指定時は current project 優先、その次にフォルダ内 baseline 1系列を自動採用")
+                    help="別 project の baseline を参照して lock / unlock / restore するときに明示指定。別名 baseline は自動採用しません")
     ap.add_argument("--基準流用", dest="baseline_from", type=str, default=None)
     ap.add_argument("--baseline-version", dest="baseline_version", type=str, default=None,
                     help="lock / unlock 時に使う baseline version を指定 (例: v002)。未指定なら最新版。baseline-from と併用可")
     ap.add_argument("--restore-version", dest="restore_version", type=str, default=None,
-                    help="指定 version を復元保存して終了。--baseline-from があればそれを復元元にし、--project は復元先として扱います。--baseline-from が無い場合は同名 project、無ければフォルダ内 baseline 1系列を復元元に使います")
+                    help="指定 version を復元保存して終了。同名を戻す場合は --project NAME、別名から複製する場合は --baseline-from SOURCE --project TARGET を指定します")
 
     ap.add_argument("--unlock", dest="unlock", action="store_true", help="既存 baseline を前提に、新規話題だけ add-only で拡張します")
     ap.add_argument("--柔軟適用", dest="unlock", action="store_true")
@@ -3989,39 +3982,21 @@ def _restore_only(result_root: Path, args: argparse.Namespace) -> None:
     - --baseline-from があれば、それを復元元(source)に固定する
     - --project は復元先(target)として扱う
     - --baseline-from が無い場合:
-        * --project に baseline が存在すれば source=target=project（同名巻き戻し）
-        * --project に baseline が無く、フォルダ内 baseline が 1 系列だけならそれを source にし、project を target に使う
-        * --project 未指定なら、フォルダ内 baseline が 1 系列だけあるとき source=target=それ
-        * それ以外は曖昧なので明示指定を要求する
+        * --project の同名 baseline を source=target として巻き戻す
+        * --project 未指定では復元元を推測せず、明示指定を要求する
     """
-    candidates = list_baseline_projects(result_root)
-
     if args.baseline_from:
         source_project = args.baseline_from
         target_project = args.project or source_project
+    elif args.project:
+        source_project = args.project
+        target_project = args.project
     else:
-        if args.project:
-            if has_baseline(result_root, args.project):
-                source_project = args.project
-                target_project = args.project
-            elif len(candidates) == 1:
-                source_project = candidates[0]
-                target_project = args.project
-            else:
-                raise BaselineSelectionError(
-                    "--restore-version では復元元が曖昧です。"
-                    "同名 project を巻き戻すならその project に baseline が必要です。"
-                    "別名へ複製するなら --baseline-from SOURCE --project TARGET を指定してください。"
-                )
-        else:
-            if len(candidates) == 1:
-                source_project = candidates[0]
-                target_project = source_project
-            else:
-                raise BaselineSelectionError(
-                    "--restore-version では復元元を特定できません。"
-                    "--baseline-from を指定するか、baseline が 1 系列だけのフォルダで実行してください。"
-                )
+        raise BaselineSelectionError(
+            "--restore-version では baseline 名を推測しません。"
+            "同名 project を戻すなら --project NAME、別名から複製するなら "
+            "--baseline-from SOURCE --project TARGET を指定してください。"
+        )
 
     if not has_baseline(result_root, source_project):
         raise BaselineSelectionError(f"restore する baseline がありません: {source_project}")
@@ -4147,20 +4122,31 @@ def main() -> None:
     # default baseline selection rule
     # 1) explicit --baseline-from
     # 2) current project baseline
-    # 3) single baseline series in the current folder
-    # 4) if multiple baseline series exist, require explicit selection
+    # 3) otherwise start a new baseline for the current project
+    # A differently named baseline is never selected implicitly.
     try:
         baseline_project, baseline_exists, baseline_resolution = resolve_default_baseline_project(
             result_root, project, args.baseline_from
         )
     except BaselineSelectionError as e:
         raise SystemExit(str(e)) from None
-    if baseline_exists and baseline_resolution == "single_in_folder" and baseline_project != project:
-        log.info("フォルダ内の既存 baseline を自動採用します: %s", baseline_project)
-    elif baseline_exists and baseline_resolution == "project":
+    if baseline_exists and baseline_resolution == "project":
         log.info("現在 project の baseline を使用します: %s", baseline_project)
     elif baseline_exists and baseline_resolution == "explicit":
         log.info("--baseline-from で baseline を指定しています: %s", baseline_project)
+
+    if args.baseline_from and not baseline_exists:
+        raise SystemExit(f"--baseline-from で指定した baseline がありません: {args.baseline_from}")
+    if args.unlock and not baseline_exists:
+        raise SystemExit(
+            f"project '{project}' の baseline がないため --unlock は実行できません。"
+            "同名 baseline を作成するか、--baseline-from NAME で明示してください。"
+        )
+    if args.baseline_version and not baseline_exists:
+        raise SystemExit(
+            f"project '{project}' の baseline がないため --baseline-version は使用できません。"
+            "同名 baseline を作成するか、--baseline-from NAME で明示してください。"
+        )
 
     loaded_baseline_cache: Optional[Tuple[TransformBundle, np.ndarray, Dict[str, Any], str]] = None
     if baseline_exists and args.use_plan is None and not args.show_candidates:
