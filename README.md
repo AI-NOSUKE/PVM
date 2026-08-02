@@ -1,7 +1,9 @@
 # PVM (Phantom Vector Mapping)
 ![python](https://img.shields.io/badge/python-3.13%20%7C%203.14-blue)
-![license](https://img.shields.io/badge/License-PVM%20v1.2-green)
+![license](https://img.shields.io/badge/License-PVM%20v1.3-source--available-orange)
 ![ci](https://github.com/AI-NOSUKE/PVM/actions/workflows/ci.yml/badge.svg)
+
+> **License:** 本リポジトリはソースコードを公開していますが、OSSではありません。非商用の個人利用・学術研究・教育・条件内のPoCを除き、個人・法人を問わず商用利用は原則禁止です。コードおよび改変版の再配布も禁止しています。詳細は[LICENSE](./LICENSE)を確認してください。
 
 ## 🔰 概要（PVMとは）
 
@@ -47,15 +49,16 @@ Embedding
 PVM Standard 6.x の要点:
 
 - 新標準は `Embedding → PCA → ICA① → Cluster① → Centroid Projection → Cluster②` です。
-- **v6.2.2 が現行版**です。同名projectのbaselineだけを自動読込し、別名baselineの流用は`--baseline-from`で明示する安全な選択ルールにしました。v6.2.1のWindows UTF-8対応も含みます。
+- **v6.2.3 が現行版**です。計算処理とbaseline schema 2.1はv6.2.2から変更せず、PVM License v1.3で非商用利用・商用利用・再配布・PoCの境界を明確化しました。
 - ICA①は意味軸、Centroid Projection後の座標はクラスタリング・lock用の境界整理空間です。初回baselineでは `ICA軸レポート.md` を既定出力し、両者を分けて確認できます。
 - `--search-budget fast|standard|thorough` で探索コストを選べます。通常は `standard`、埋め込み後の探索を短縮したい場合は `fast` を使います。
 - exact検証に失敗したseedは混在次元のARIへ入れず記録します。完全版が成立しない場合だけ従来のICA/PCA退避経路へ進み、`selection_tier=degraded` として明示します。
 - v6.1.1 は v6.1.0 に対する unlock再保存バグ修正でした。
-- v6.2.2 の `SCRIPT_VERSION` は `PVM-standard-6.2.2`、`SCHEMA_VERSION` は `2.1` です。既存のschema 2.1 baselineはそのまま利用できます。
+- v6.2.3 の `SCRIPT_VERSION` は `PVM-standard-6.2.3`、`SCHEMA_VERSION` は `2.1` です。既存のschema 2.1 baselineはそのまま利用できます。
 - v6.1.0 では候補選定の主指標を全候補共通の PCA L2 評価空間で計算し、射影後空間の指標は診断用に分離しています。
 - schema 2.0 baseline は警告付きで読み込み可能です。この場合、追加された ICA① 空間 gate は使わず、従来通り final空間 gate のみで動作します。
 - 評価では内部指標だけに依存せず、安定性、holdoutへのlock適用、クラスタ解釈の一貫性を確認します。
+- [PVM Standard 6.2.3 Release Notes](./RELEASE_v6.2.3.md)
 - [PVM Standard 6.2.2 Release Notes](./RELEASE_v6.2.2.md)
 - [PVM Standard 6.2.1 Release Notes](./RELEASE_v6.2.1.md)
 - [PVM Standard 6.2.0 Release Notes](./RELEASE_v6.2.0.md)
@@ -324,7 +327,7 @@ PVMは「正解ラベル再現器」ではありません。自由回答の意�
 
 ## ベンチマーク方針
 
-PVM Standard 6.x（現行版6.2.2）の有効性は、同じ入力データと同じembedding条件のもとで、複数の比較対象と並べて検証します。少なくとも以下を比較対象とします。
+PVM Standard 6.x（現行版6.2.3）の有効性は、同じ入力データと同じembedding条件のもとで、複数の比較対象と並べて検証します。少なくとも以下を比較対象とします。
 
 - embedding + spherical k-means
 - PCA → ICA① + spherical k-means
@@ -351,5 +354,10 @@ PVM Standard 6.x（現行版6.2.2）の有効性は、同じ入力データと�
 
 ## ライセンス / 作者
 
-- **License**：PVM License v1.2（詳細は [LICENSE](./LICENSE) / [License_FAQ.md](./License_FAQ.md) を参照）
+- **License**：PVM License v1.3（source-available、非OSS）
+  - 非商用の個人利用・学術研究・教育、および条件内のPoCのみ無償です。
+  - 個人事業、副業、収益化、社内業務、受託・顧客提供を含む商用利用は原則禁止です。
+  - 著作権者が例外的に事前の書面で許可した場合だけ、その条件に従って利用できます。
+  - コードおよび改変版の再配布は禁止しています。
+  - 詳細は [LICENSE](./LICENSE) / [License_FAQ.md](./License_FAQ.md) を参照してください。
 - **Author**：AI-NOSUKE（透明ペインター / Phantom Color Painter）

@@ -33,7 +33,7 @@ Current defaults
 - batch: 8
 """
 
-__version__ = "6.2.2"
+__version__ = "6.2.3"
 
 import argparse
 import json
@@ -145,7 +145,7 @@ except ImportError:  # pragma: no cover
 SCHEMA_VERSION = "2.1"
 PREVIOUS_SCHEMA_VERSION = "2.0"
 LEGACY_SCHEMA_VERSION = "1.1"
-SCRIPT_VERSION = "PVM-standard-6.2.2"
+SCRIPT_VERSION = "PVM-standard-6.2.3"
 DEFAULT_EMBEDDING_PREFIX = "トピック: "
 DEFAULT_MAX_LEN = 8192
 DEFAULT_BATCH = 8

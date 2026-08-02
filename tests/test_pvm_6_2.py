@@ -25,6 +25,28 @@ class _FakeICA:
 
 
 class Pvm620Tests(unittest.TestCase):
+    def test_release_and_license_metadata_are_consistent(self):
+        root = Path(PVM.__file__).resolve().parent
+        license_text = (root / "LICENSE").read_text(encoding="utf-8")
+        faq_text = (root / "License_FAQ.md").read_text(encoding="utf-8")
+        readme_text = (root / "README.md").read_text(encoding="utf-8")
+        release_text = (root / "RELEASE_v6.2.3.md").read_text(encoding="utf-8")
+
+        self.assertEqual(PVM.__version__, "6.2.3")
+        self.assertEqual(PVM.SCRIPT_VERSION, "PVM-standard-6.2.3")
+        self.assertIn("PVM License v1.3", license_text)
+        self.assertIn("利用者が個人であること", license_text)
+        self.assertIn("再配布等の禁止", license_text)
+        self.assertIn("商用利用は原則として禁止", license_text)
+        self.assertIn("商用利用を許可する義務を負いません", license_text)
+        self.assertIn("リセットされません", license_text)
+        self.assertIn("過去の版には", license_text)
+        self.assertNotIn("再配布可能", license_text)
+        self.assertNotIn("標準価格", license_text)
+        self.assertIn("PVM License v1.3", faq_text)
+        self.assertIn("PVM License v1.3", readme_text)
+        self.assertIn("PVM Standard 6.2.3", release_text)
+
     def test_baseline_auto_selection_uses_matching_project_name_only(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)

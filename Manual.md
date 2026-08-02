@@ -6,7 +6,7 @@
 **rank=1 が最良**で、`--use-plan N` の **N にはこの rank 値**を渡します。
 2回目以降は既存の基準に基づくロック実行がデフォルトです。`--unlock` で新話題のみを吸収して基準を拡張できます。
 
-現行版は **PVM Standard 6.2.2** です。6.2.0でICA①次元とクラスタ数の探索を拡張し、Centroid Projectionが実際に圧縮した候補と、ICA①の意味軸を確認できる出力を追加しました。6.2.1では日本語WindowsのUTF-8起動を自動化し、6.2.2では同名projectのbaselineだけを自動読込するよう選択ルールを明確化しました。別名baselineを使う場合は`--baseline-from NAME`で明示します。baseline schemaは2.1のままです。schema 2.0 baselineも警告付きで読み込めますが、ICA①空間gateは使われません。
+現行版は **PVM Standard 6.2.3** です。6.2.0でICA①次元とクラスタ数の探索を拡張し、Centroid Projectionが実際に圧縮した候補と、ICA①の意味軸を確認できる出力を追加しました。6.2.1では日本語WindowsのUTF-8起動を自動化し、6.2.2では同名projectのbaselineだけを自動読込するよう選択ルールを明確化しました。6.2.3では計算処理を変えず、PVM License v1.3で非商用利用・商用利用・再配布・PoCの範囲を明確化しました。別名baselineを使う場合は`--baseline-from NAME`で明示します。baseline schemaは2.1のままです。schema 2.0 baselineも警告付きで読み込めますが、ICA①空間gateは使われません。
 
 ## 2. 入力データ
 - 既定設定で `python PVM.py` を実行可能（必要に応じてオプションで上書き）。
