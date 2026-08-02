@@ -25,6 +25,46 @@ class _FakeICA:
 
 
 class Pvm620Tests(unittest.TestCase):
+    def test_windows_utf8_restart_command_preserves_original_invocation(self):
+        flags = SimpleNamespace(utf8_mode=0)
+        with (
+            patch.object(PVM.os, "name", "nt"),
+            patch.object(PVM.sys, "flags", flags),
+            patch.object(PVM.sys, "executable", r"C:\Python314\python.exe"),
+            patch.object(PVM.sys, "orig_argv", [r"C:\Python314\python.exe", "-m", "sample", "--flag"]),
+        ):
+            self.assertTrue(PVM._windows_utf8_mode_required())
+            self.assertEqual(
+                PVM._windows_utf8_reexec_args(),
+                [r"C:\Python314\python.exe", "-X", "utf8", "-m", "sample", "--flag"],
+            )
+
+    def test_import_user_gets_actionable_windows_utf8_error(self):
+        flags = SimpleNamespace(utf8_mode=0)
+        with patch.object(PVM.os, "name", "nt"), patch.object(PVM.sys, "flags", flags):
+            with self.assertRaisesRegex(RuntimeError, r"python -X utf8"):
+                PVM._require_windows_utf8_for_embedding()
+
+    def test_windows_utf8_restart_waits_and_propagates_exit_code(self):
+        flags = SimpleNamespace(utf8_mode=0)
+        completed = SimpleNamespace(returncode=7)
+        with (
+            patch.object(PVM.os, "name", "nt"),
+            patch.object(PVM.sys, "flags", flags),
+            patch.object(PVM.sys, "executable", r"C:\Python314\python.exe"),
+            patch.object(PVM.sys, "orig_argv", [r"C:\Python314\python.exe", "PVM.py", "--version"]),
+            patch.dict(PVM.os.environ, {}, clear=True),
+            patch.object(PVM.subprocess, "run", return_value=completed) as run,
+        ):
+            with self.assertRaises(SystemExit) as stopped:
+                PVM._ensure_windows_cli_utf8()
+        self.assertEqual(stopped.exception.code, 7)
+        command = run.call_args.args[0]
+        child_env = run.call_args.kwargs["env"]
+        self.assertEqual(command, [r"C:\Python314\python.exe", "-X", "utf8", "PVM.py", "--version"])
+        self.assertEqual(child_env["PYTHONUTF8"], "1")
+        self.assertEqual(child_env[PVM._WINDOWS_UTF8_REEXEC_MARKER], "1")
+
     def test_discovery_can_fallback_but_exact_validation_cannot(self):
         X = np.arange(60, dtype=np.float32).reshape(12, 5)
 

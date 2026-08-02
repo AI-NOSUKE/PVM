@@ -33,7 +33,7 @@ Current defaults
 - batch: 8
 """
 
-__version__ = "6.2.0"
+__version__ = "6.2.1"
 
 import argparse
 import json
@@ -42,6 +42,7 @@ import math
 import os
 import platform
 import re
+import subprocess
 import sys
 import time
 import unicodedata
@@ -50,6 +51,57 @@ from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import Any, Dict, List, Optional, Sequence, Tuple
+
+
+_WINDOWS_UTF8_REEXEC_MARKER = "_PVM_WINDOWS_UTF8_REEXEC"
+
+
+def _windows_utf8_mode_required() -> bool:
+    """Return whether this Windows process still uses the legacy locale codec."""
+    return os.name == "nt" and int(getattr(sys.flags, "utf8_mode", 0)) == 0
+
+
+def _windows_utf8_reexec_args() -> List[str]:
+    """Rebuild the original Python invocation with UTF-8 mode enabled."""
+    original = list(getattr(sys, "orig_argv", ()) or ())
+    invocation = original[1:] if original else list(sys.argv)
+    return [sys.executable, "-X", "utf8", *invocation]
+
+
+def _ensure_windows_cli_utf8() -> None:
+    """Restart the PVM CLI once in UTF-8 mode on legacy-locale Windows.
+
+    Some PyTorch wheels contain UTF-8 templates that are opened without an
+    explicit encoding while ModernBERT is imported.  Japanese Windows then
+    decodes those files as cp932 and model loading fails before embedding.
+    """
+    if not _windows_utf8_mode_required():
+        os.environ.pop(_WINDOWS_UTF8_REEXEC_MARKER, None)
+        return
+    if os.environ.get(_WINDOWS_UTF8_REEXEC_MARKER) == "1":
+        raise RuntimeError(
+            "WindowsでUTF-8モードへの再起動に失敗しました。"
+            "python -X utf8 PVM.py ... で実行してください。"
+        )
+    env = os.environ.copy()
+    env["PYTHONUTF8"] = "1"
+    env[_WINDOWS_UTF8_REEXEC_MARKER] = "1"
+    completed = subprocess.run(_windows_utf8_reexec_args(), env=env, check=False)
+    raise SystemExit(completed.returncode)
+
+
+def _require_windows_utf8_for_embedding() -> None:
+    """Give import users an actionable error instead of PyTorch's cp932 trace."""
+    if _windows_utf8_mode_required():
+        raise RuntimeError(
+            "Ruri埋め込みを日本語Windowsで使うにはUTF-8モードが必要です。"
+            "呼び出し元を python -X utf8 your_script.py ... で起動してください。"
+            "PVM.pyを直接実行する場合は自動的にUTF-8モードへ切り替わります。"
+        )
+
+
+if __name__ == "__main__":
+    _ensure_windows_cli_utf8()
 
 import numpy as np
 import pandas as pd
@@ -93,7 +145,7 @@ except ImportError:  # pragma: no cover
 SCHEMA_VERSION = "2.1"
 PREVIOUS_SCHEMA_VERSION = "2.0"
 LEGACY_SCHEMA_VERSION = "1.1"
-SCRIPT_VERSION = "PVM-standard-6.2.0"
+SCRIPT_VERSION = "PVM-standard-6.2.1"
 DEFAULT_EMBEDDING_PREFIX = "トピック: "
 DEFAULT_MAX_LEN = 8192
 DEFAULT_BATCH = 8
@@ -441,6 +493,7 @@ def get_project_name(arg_project: Optional[str], infile: Path) -> str:
 # ---------------------------------------------------------------------------
 
 def ensure_ruri() -> None:
+    _require_windows_utf8_for_embedding()
     try:
         import torch  # noqa
         from transformers import AutoTokenizer, AutoModel  # noqa
@@ -449,6 +502,7 @@ def ensure_ruri() -> None:
 
 
 def compute_embeddings(texts: Sequence[str], model_name: str, batch: int, max_len: int, embedding_prefix: str = DEFAULT_EMBEDDING_PREFIX) -> Tuple[np.ndarray, str]:
+    _require_windows_utf8_for_embedding()
     import torch
     from transformers import AutoTokenizer, AutoModel
 
@@ -2495,7 +2549,7 @@ def _fmt_examples(df_src: pd.DataFrame, text_col: str, indices: Sequence[int], d
 
 def quality_note_from_mode(transform_mode: str) -> str:
     if transform_mode == "full_original_pvm":
-        return "PVM Standard 6.2.0 の標準経路で解析しています。"
+        return f"PVM Standard {__version__} の標準経路で解析しています。"
     if transform_mode == "ica1_only_pvm":
         return "ICA①までは使用し、centroid projection を省略したdegraded経路です。完全版と同等には扱いません。"
     if transform_mode == "pca_pvm":

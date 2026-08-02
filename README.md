@@ -42,20 +42,21 @@ Embedding
 → Cluster②
 ```
 
-操作方法は従来とほぼ同じです。schema 2.0 baseline は警告付きで読み込み可能ですが、追加された ICA① 空間 gate は使われません。重要なプロジェクトでは v6.2.0 / schema 2.1 でbaselineを再作成してください。
+操作方法は従来とほぼ同じです。schema 2.0 baseline は警告付きで読み込み可能ですが、追加された ICA① 空間 gate は使われません。重要なプロジェクトでは v6.2.x / schema 2.1 でbaselineを再作成してください。
 
 PVM Standard 6.x の要点:
 
 - 新標準は `Embedding → PCA → ICA① → Cluster① → Centroid Projection → Cluster②` です。
-- **v6.2.0 が現行版**です。ICA①の探索を低次元固定の候補表から対数グリッド＋canonical次元のexact検証へ改め、Centroid Projectionが実際に圧縮した候補を完全版として扱います。
+- **v6.2.1 が現行版**です。v6.2.0の探索・schemaを維持し、日本語WindowsでRuri読込時に起きる文字コード不整合をCLI起動時に自動回避します。
 - ICA①は意味軸、Centroid Projection後の座標はクラスタリング・lock用の境界整理空間です。初回baselineでは `ICA軸レポート.md` を既定出力し、両者を分けて確認できます。
 - `--search-budget fast|standard|thorough` で探索コストを選べます。通常は `standard`、埋め込み後の探索を短縮したい場合は `fast` を使います。
 - exact検証に失敗したseedは混在次元のARIへ入れず記録します。完全版が成立しない場合だけ従来のICA/PCA退避経路へ進み、`selection_tier=degraded` として明示します。
 - v6.1.1 は v6.1.0 に対する unlock再保存バグ修正でした。
-- v6.2.0 の `SCRIPT_VERSION` は `PVM-standard-6.2.0`、`SCHEMA_VERSION` は `2.1` です。schema 2.1 baseline はそのまま利用できます。
+- v6.2.1 の `SCRIPT_VERSION` は `PVM-standard-6.2.1`、`SCHEMA_VERSION` は `2.1` です。v6.2.0のschema 2.1 baselineはそのまま利用できます。
 - v6.1.0 では候補選定の主指標を全候補共通の PCA L2 評価空間で計算し、射影後空間の指標は診断用に分離しています。
 - schema 2.0 baseline は警告付きで読み込み可能です。この場合、追加された ICA① 空間 gate は使わず、従来通り final空間 gate のみで動作します。
 - 評価では内部指標だけに依存せず、安定性、holdoutへのlock適用、クラスタ解釈の一貫性を確認します。
+- [PVM Standard 6.2.1 Release Notes](./RELEASE_v6.2.1.md)
 - [PVM Standard 6.2.0 Release Notes](./RELEASE_v6.2.0.md)
 - [PVM Standard 6.1.2 Release Notes](./RELEASE_v6.1.2.md)
 - [PVM Standard 6.1.0 Release Notes](./RELEASE_v6.1.0.md)
