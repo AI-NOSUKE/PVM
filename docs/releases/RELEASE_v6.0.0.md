@@ -58,7 +58,7 @@ Evaluation should also include:
 - human or LLM-assisted review of representative examples, boundary examples, and cluster naming
 - ARI/NMI only when reliable ground-truth labels exist
 
-See [docs/evaluation_protocol.md](docs/evaluation_protocol.md) for the proposed evaluation protocol.
+See [evaluation_protocol.md](../evaluation_protocol.md) for the proposed evaluation protocol.
 
 ## Python Runtime Support
 

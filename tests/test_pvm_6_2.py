@@ -30,7 +30,7 @@ class Pvm620Tests(unittest.TestCase):
         license_text = (root / "LICENSE").read_text(encoding="utf-8")
         faq_text = (root / "docs" / "USAGE_FAQ.md").read_text(encoding="utf-8")
         readme_text = (root / "README.md").read_text(encoding="utf-8")
-        release_text = (root / "RELEASE_v6.2.3.md").read_text(encoding="utf-8")
+        release_text = (root / "docs" / "releases" / "RELEASE_v6.2.3.md").read_text(encoding="utf-8")
 
         self.assertEqual(PVM.__version__, "6.2.3")
         self.assertEqual(PVM.SCRIPT_VERSION, "PVM-standard-6.2.3")

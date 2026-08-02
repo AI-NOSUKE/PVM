@@ -29,11 +29,9 @@
 
 > ※ ベクトル化（embedding）はPVM手法そのものには含まれませんが、処理の前提ステップとして 0. に記載しています。
 
-## PVM Standard 6.x
+## PVM Standard
 
-PVM 6.0.0 で、自由回答の意味空間生成を Standard PVM に刷新しました。
-
-従来の `full_pvm` は `PCA → ICA① → 全文書 second-ICA(k−1)` を使っていましたが、6.0.0 以降は以下を標準PVMとします。
+現行版は **PVM Standard 6.2.3**、baseline schemaは **2.1** です。標準パイプラインは以下の通りです。
 
 ```text
 Embedding
@@ -44,27 +42,14 @@ Embedding
 → Cluster②
 ```
 
-操作方法は従来とほぼ同じです。schema 2.0 baseline は警告付きで読み込み可能ですが、追加された ICA① 空間 gate は使われません。重要なプロジェクトでは v6.2.x / schema 2.1 でbaselineを再作成してください。
+PVM Standard の要点:
 
-PVM Standard 6.x の要点:
-
-- 新標準は `Embedding → PCA → ICA① → Cluster① → Centroid Projection → Cluster②` です。
-- **v6.2.3 が現行版**です。計算処理とbaseline schema 2.1はv6.2.2から変更せず、PVM License v1.3で非商用利用・商用利用・再配布・PoCの境界を明確化しました。
 - ICA①は意味軸、Centroid Projection後の座標はクラスタリング・lock用の境界整理空間です。初回baselineでは `ICA軸レポート.md` を既定出力し、両者を分けて確認できます。
 - `--search-budget fast|standard|thorough` で探索コストを選べます。通常は `standard`、埋め込み後の探索を短縮したい場合は `fast` を使います。
-- exact検証に失敗したseedは混在次元のARIへ入れず記録します。完全版が成立しない場合だけ従来のICA/PCA退避経路へ進み、`selection_tier=degraded` として明示します。
-- v6.1.1 は v6.1.0 に対する unlock再保存バグ修正でした。
-- v6.2.3 の `SCRIPT_VERSION` は `PVM-standard-6.2.3`、`SCHEMA_VERSION` は `2.1` です。既存のschema 2.1 baselineはそのまま利用できます。
-- v6.1.0 では候補選定の主指標を全候補共通の PCA L2 評価空間で計算し、射影後空間の指標は診断用に分離しています。
-- schema 2.0 baseline は警告付きで読み込み可能です。この場合、追加された ICA① 空間 gate は使わず、従来通り final空間 gate のみで動作します。
+- exact検証に失敗したseedは混在次元のARIへ入れず記録します。完全版が成立しない場合だけICA/PCA退避経路へ進み、`selection_tier=degraded` として明示します。
+- 候補選定の主指標は全候補共通の PCA L2 評価空間で計算し、射影後空間の指標は診断用に分離します。
+- 初回はbaselineを作成し、2回目以降は同名projectのbaselineをlock適用します。別名baselineの利用は `--baseline-from NAME` で明示します。
 - 評価では内部指標だけに依存せず、安定性、holdoutへのlock適用、クラスタ解釈の一貫性を確認します。
-- [PVM Standard 6.2.3 Release Notes](./RELEASE_v6.2.3.md)
-- [PVM Standard 6.2.2 Release Notes](./RELEASE_v6.2.2.md)
-- [PVM Standard 6.2.1 Release Notes](./RELEASE_v6.2.1.md)
-- [PVM Standard 6.2.0 Release Notes](./RELEASE_v6.2.0.md)
-- [PVM Standard 6.1.2 Release Notes](./RELEASE_v6.1.2.md)
-- [PVM Standard 6.1.0 Release Notes](./RELEASE_v6.1.0.md)
-- [PVM Standard 6.0.0 Release Notes](./RELEASE_v6.0.0.md)
 
 👉 サンプルレポート（PVMによるWebテキスト分類と、クラスタロックを用いた比較分析の実例）  
 - ももクロ関連コメント分析: [docs/momoclo_report.md](docs/momoclo_report.md)  
@@ -94,7 +79,7 @@ Ruri v3 のクラスタリング用途に合わせ、既定では各テキスト
 
 ## 目次
 - [目的と特徴](#目的と特徴)
-- [PVM Standard 6.x](#pvm-standard-6x)
+- [PVM Standard](#pvm-standard)
 - [インストール（ローカル）](#インストールローカル)
 - [クイックスタート](#クイックスタート)
   - [① 動作確認サンプル](#-動作確認サンプル)
@@ -138,7 +123,6 @@ python -m pip install -r requirements.txt
 ```
 - 推奨環境は Python 3.14 です。互換性確認として、CIでは Python 3.13 / 3.14 の両方で依存関係のインストール、単体テスト、`py_compile`、`--version`、`--self-check` を実行しています。初回はRuri v3モデル（1GB超）をダウンロードするため、ネットワーク接続が必要で時間がかかることがあります。
 - 日本語Windowsで`PVM.py`を直接実行すると、必要な場合だけPythonをUTF-8モードで自動的に起動し直します。通常の実行コマンドを変更する必要はありません。別のPythonスクリプトから`import PVM`してRuri埋め込みを使う場合は、呼び出し元を`python -X utf8 your_script.py ...`で起動してください。
-- Python 3.14対応に伴い依存ライブラリを更新しています。PVM Standard 6.0.0のアルゴリズム仕様は維持していますが、旧依存環境で作成したbaselineと完全な数値一致を保証するものではありません。重要なプロジェクトでは、Python 3.14環境でbaselineを再作成することを推奨します。
 
 ---
 
@@ -228,7 +212,7 @@ python PVM.py --use-plan 1
 
 現行の `PVM.py` は単一ファイルで、内部には embedding、transform、clustering、evaluation、baseline/history、lock/unlock、CLI の責務が含まれます。一般的なライブラリ設計であれば分割対象になり得ますが、PVMの標準配布形態では「1ファイルで完結し、ローカルで確認・実行できる」ことを重視しています。
 
-将来的にライブラリ化、PyPI化、モジュール分割を検討する余地はあります。ただし、現時点の標準は single-file CLI であり、PVM Standard 6.x でもこの方針を維持します。
+将来的にライブラリ化、PyPI化、モジュール分割を検討する余地はあります。現在の標準配布形態は single-file CLI です。
 
 ---
 
@@ -262,7 +246,7 @@ python PVM.py --use-plan 1
 | `--restore-version vXXX` | 指定 version を復元保存して終了 | - |
 | `--search-budget MODE` | 初回探索の計算予算（`fast` / `standard` / `thorough`） | standard |
 | `--include-ica1-cols` | `結果スコア.csv` にICA①座標も追加（通常の意味軸確認は既定のレポートで可能） | なし |
-| `--max-cp-cols N` | `結果スコア.csv` に出力する最終座標列の上限（旧 `--max_ic_cols` も利用可） | 全て |
+| `--max-cp-cols N` | `結果スコア.csv` に出力する最終座標列の上限 | 全て |
 | `--k_min N` / `--k_max N` | 候補探索の K 範囲 | 3 / 12 |
 | `--embedding_model NAME` | 埋め込みモデル | cl-nagoya/ruri-v3-310m |
 | `--embedding-prefix TEXT` | embedding前に付けるprefix。通常変更不要。`none` で空prefix | `トピック: ` |
@@ -296,7 +280,6 @@ python PVM.py --use-plan 1
 - **初回の自動採用**：無指定で走らせると自動採用で基準作成。意図を固定したい場合は `--show-candidates` → `--use-plan N` を明示。  
 - **再現性**：`--random_state` の固定 + **baselineロック** 運用を推奨。  
 - **project名**：同じ分析の初回・lock・unlockでは同じ`--project`を使います。別の分析だけ別名にしてください。実行回ごとに`1回目`、`2回目`と変える用途ではありません。
-- **旧baseline互換性**：schema 2.0 baseline は警告付きで読み込み可能ですが、ICA① 空間 gate は使われません。schema 1.1 など旧baselineは再作成してください。
 - **baselineの選択**：`--baseline-from`を指定した場合はそのbaseline、未指定なら現在projectと同名のbaselineだけを使います。別名baselineは1系列だけでも自動採用しません。
 - **モデル依存**：埋め込みモデル、embedding prefix、max_len を変えると軸解釈が変わります。一貫性のため同一設定での運用を推奨。
 - **プロジェクト分離**：異なる分析は `--project` で分けることで、基準の混在を防げます。
@@ -305,13 +288,13 @@ python PVM.py --use-plan 1
 
 ## 評価上の注意
 
-PVM v6.1.0以降では、候補選定に使う silhouette、Calinski-Harabasz、Davies-Bouldin などの内部指標は、Centroid Projection後の候補固有空間ではなく、全候補で共通の評価空間（PCA後の `X_eval = l2_normalize(Xp)`）で計算します。フィールド名は `silhouette_eval_space`、`ch_eval_space`、`db_eval_space` のように空間が分かる形にしています。
+候補選定に使う silhouette、Calinski-Harabasz、Davies-Bouldin などの内部指標は、Centroid Projection後の候補固有空間ではなく、全候補で共通の評価空間（PCA後の `X_eval = l2_normalize(Xp)`）で計算します。フィールド名は `silhouette_eval_space`、`ch_eval_space`、`db_eval_space` のように空間が分かる形にしています。
 
-射影後空間の `silhouette_projected_space`、`ch_projected_space`、`db_projected_space` は、解釈・表示・診断用の指標です。Centroid Projection は Cluster① から学習されるため、射影後指標を候補選定の品質証拠や外部妥当性の証明としては扱いません。v6.1.0で silhouette 値が旧レポートより低く出る場合がありますが、これは劣化ではなく、射影後空間で膨らんでいた値を共通評価空間で保守的に測るためです。
+射影後空間の `silhouette_projected_space`、`ch_projected_space`、`db_projected_space` は、解釈・表示・診断用の指標です。Centroid Projection は Cluster① から学習されるため、射影後指標を候補選定の品質証拠や外部妥当性の証明としては扱いません。
 
 PCA/ICA①の圧縮空間の外に完全に乗る新話題は、ICA① pre-projection gateでも原理的に検出できません。これは次元圧縮を使う手法の一般的限界であり、実運用ではholdout/定期的なbaseline reviewで補います。
 
-v6.1.1以降の novelty gate は final空間 gate と ICA① pre-projection gate のORで判定するため、学習データ自身をlockした場合でも `gate_over_rate` は従来より高く出ることがあります。これは検出感度を上げた結果であり、ただちに品質劣化を意味しません。baseline reviewでは `gate_final_only_count` / `gate_ica1_only_count` / `gate_both_count` を分けて確認してください。
+novelty gate は final空間 gate と ICA① pre-projection gate のORで判定します。baseline reviewでは `gate_final_only_count` / `gate_ica1_only_count` / `gate_both_count` を分けて確認してください。
 
 PVMの評価では、内部指標だけでなく、次の観点を併用します。
 
@@ -327,11 +310,11 @@ PVMは「正解ラベル再現器」ではありません。自由回答の意�
 
 ## ベンチマーク方針
 
-PVM Standard 6.x（現行版6.2.3）の有効性は、同じ入力データと同じembedding条件のもとで、複数の比較対象と並べて検証します。少なくとも以下を比較対象とします。
+PVMの有効性は、同じ入力データと同じembedding条件のもとで、複数の比較対象と並べて検証します。少なくとも以下を比較対象とします。
 
 - embedding + spherical k-means
 - PCA → ICA① + spherical k-means
-- PVM Standard 6.xの現行版
+- PVMの完全パイプライン
 - 必要に応じてBERTopic等の既存トピックモデリング手法
 
 比較では、内部指標の順位だけでなく、seed変更時の安定性、holdoutへのlock適用、クラスタ名の付けやすさ、代表文の読みやすさ、実務上の再利用しやすさを合わせて確認します。
