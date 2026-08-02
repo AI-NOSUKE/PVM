@@ -1,6 +1,4 @@
 # -*- coding: utf-8 -*-
-from __future__ import annotations
-
 """
 PVM complete edition
 
@@ -33,7 +31,9 @@ Current defaults
 - batch: 8
 """
 
-__version__ = "6.2.3"
+from __future__ import annotations
+
+__version__ = "6.2.4"
 
 import argparse
 import json
@@ -472,9 +472,40 @@ def autodetect_columns(df: pd.DataFrame, text_col: Optional[str], id_col: Option
         text_col = scored[0][1]
     if text_col not in df.columns:
         raise ValueError("テキスト列の自動検出に失敗しました。--text_col で指定してください。")
-    if id_col is not None and id_col not in df.columns:
-        id_col = None
+    if id_col is None:
+        # Preserve the conventional ID column without guessing at names such
+        # as user_id or identifier, whose meaning may differ.
+        id_col = next(
+            (c for c in cols if isinstance(c, str) and c.lower() == "id" and c != text_col),
+            None,
+        )
+    elif id_col not in df.columns:
+        raise PVMUserError(f"--id_col で指定した列がありません: {id_col}")
     return text_col, id_col
+
+
+def prepare_input_dataframe(
+    df0: pd.DataFrame,
+    text_col: str,
+    id_col: Optional[str],
+) -> Tuple[pd.DataFrame, int]:
+    """入力列を標準化し、欠損または空の本文を除外する。"""
+    df = df0[[c for c in [id_col, text_col] if c is not None]].copy()
+    if id_col is None:
+        # テキスト列を先に "text" へ寄せてから採番する。
+        # 逆順だと、テキスト列名が "id" のとき採番が本文を上書きしてしまう。
+        df.rename(columns={text_col: "text"}, inplace=True)
+        df["id"] = np.arange(len(df))
+    else:
+        df.rename(columns={text_col: "text", id_col: "id"}, inplace=True)
+
+    raw_text = df["text"]
+    df["text"] = raw_text.where(raw_text.notna(), "").astype(str).map(normalize_text)
+    empty_mask = df["text"].eq("")
+    excluded_count = int(empty_mask.sum())
+    if excluded_count:
+        df = df.loc[~empty_mask].copy()
+    return df.reset_index(drop=True), excluded_count
 
 
 def get_project_name(arg_project: Optional[str], infile: Path) -> str:
@@ -1829,15 +1860,18 @@ def explore_candidates(
     """
     n = len(X)
     if n < 3:
-        raise ValueError("データが3件未満です。最低3件以上必要です。")
+        raise PVMUserError("候補探索には最低3件以上必要です。")
     cfg = search_config or ADAPTIVE_SEARCH_PRESETS["standard"]
-    pca_base = get_pca_base(X, pca_var=pca_var, random_state=random_state, cache=cache)
-    X_eval = l2_normalize(pca_base["Xp"])
-    dims = propose_ica1_dims_from_pca_base(pca_base, pca_var, cfg.dim_candidates)
     k_hi = min(int(k_max), n - 1)
     k_lo = max(2, int(k_min))
     if k_hi < k_lo:
-        raise ValueError("有効な k 範囲がありません。")
+        raise PVMUserError(
+            f"候補探索の件数が不足しています。"
+            f"k_min={k_lo} では最低 {k_lo + 1} 件必要です（現在 {n} 件）。"
+        )
+    pca_base = get_pca_base(X, pca_var=pca_var, random_state=random_state, cache=cache)
+    X_eval = l2_normalize(pca_base["Xp"])
+    dims = propose_ica1_dims_from_pca_base(pca_base, pca_var, cfg.dim_candidates)
     bounded_retry = _search_retry_config(ica_retry_config, cfg, exact=False)
     exact_cfg = _search_retry_config(ica_retry_config, cfg, exact=True)
     requested_by_effective: Dict[int, set[int]] = {}
@@ -2774,6 +2808,7 @@ def export_ai_prompt_pack(
     packet_lines.append('# AI_解釈依頼')
     packet_lines.append('')
     packet_lines.append('このファイルを、そのまま解釈・命名を行う大規模言語モデル（LLM）または生成AIに渡してください。')
+    packet_lines.append('> **取り扱い注意:** このファイルには入力本文の代表例が含まれます。外部のLLM・生成AIへ渡す前に、機密性、個人情報、組織の利用ルールを確認してください。')
     packet_lines.append('PVM の数理説明は最小限にし、命名・解釈に必要な情報だけを整理して載せています。')
     packet_lines.append('')
     packet_lines.append('## 前提')
@@ -4100,24 +4135,18 @@ def main() -> None:
     text_col, id_col = autodetect_columns(df0, args.text_col, args.id_col)
     log.info('使用する列: テキスト列="%s"%s', text_col, f'、ID列="{id_col}"' if id_col else "（ID列なし・自動付番）")
 
-    df = df0[[c for c in [id_col, text_col] if c is not None]].copy()
+    df, excluded_count = prepare_input_dataframe(df0, text_col, id_col)
     del df0
-    if id_col is None:
-        # テキスト列を先に "text" へ寄せてから採番する。
-        # 逆順だと、テキスト列名が "id" のとき採番が本文を上書きしてしまう。
-        df.rename(columns={text_col: "text"}, inplace=True)
-        df["id"] = np.arange(len(df))
-    else:
-        df.rename(columns={text_col: "text", id_col: "id"}, inplace=True)
+    if excluded_count:
+        log.warning("本文が欠損または空の %d 件を除外しました。", excluded_count)
     keep_cols = ["id", "text"]
     effective_text_col = "text"
-    df["text"] = df["text"].astype(str).map(normalize_text)
     n = len(df)
+    if n == 0:
+        raise PVMUserError("有効な本文が1件もありません。入力ファイルのテキスト列を確認してください。")
     log.info("データ件数: %d", n)
 
     project = get_project_name(args.project, infile)
-    run_dir = next_run_dir(result_root, project)
-    cache: Dict[Any, Any] = {}
 
     # default baseline selection rule
     # 1) explicit --baseline-from
@@ -4147,6 +4176,17 @@ def main() -> None:
             f"project '{project}' の baseline がないため --baseline-version は使用できません。"
             "同名 baseline を作成するか、--baseline-from NAME で明示してください。"
         )
+
+    needs_candidate_search = bool(args.show_candidates or args.use_plan is not None or not baseline_exists)
+    minimum_for_search = max(3, int(args.k_min) + 1)
+    if needs_candidate_search and n < minimum_for_search:
+        raise PVMUserError(
+            f"初回の候補探索には、k_min={int(args.k_min)} の設定で"
+            f"最低 {minimum_for_search} 件の有効な本文が必要です（現在 {n} 件）。"
+        )
+
+    run_dir = next_run_dir(result_root, project)
+    cache: Dict[Any, Any] = {}
 
     loaded_baseline_cache: Optional[Tuple[TransformBundle, np.ndarray, Dict[str, Any], str]] = None
     if baseline_exists and args.use_plan is None and not args.show_candidates:

@@ -25,14 +25,38 @@ class _FakeICA:
 
 
 class Pvm620Tests(unittest.TestCase):
+    def test_input_preparation_preserves_id_and_drops_blank_text(self):
+        source = pd.DataFrame({
+            "id": [101, 102, 103, 104],
+            "text": ["有効な本文", None, "   ", "　残す本文　"],
+        })
+        text_col, id_col = PVM.autodetect_columns(source, None, None)
+        prepared, excluded = PVM.prepare_input_dataframe(source, text_col, id_col)
+
+        self.assertEqual((text_col, id_col), ("text", "id"))
+        self.assertEqual(excluded, 2)
+        self.assertEqual(prepared["id"].tolist(), [101, 104])
+        self.assertEqual(prepared["text"].tolist(), ["有効な本文", "残す本文"])
+
+    def test_candidate_search_reports_required_count_before_pca(self):
+        with self.assertRaisesRegex(PVM.PVMUserError, r"k_min=3.*最低 4 件"):
+            PVM.explore_candidates(
+                np.zeros((3, 8), dtype=np.float32),
+                k_min=3,
+                k_max=12,
+                pca_var=0.9,
+                random_state=42,
+                cache={},
+            )
+
     def test_release_and_license_metadata_are_consistent(self):
         root = Path(PVM.__file__).resolve().parent
         license_text = (root / "LICENSE").read_text(encoding="utf-8")
         faq_text = (root / "docs" / "USAGE_FAQ.md").read_text(encoding="utf-8")
         readme_text = (root / "README.md").read_text(encoding="utf-8")
-        release_text = (root / "docs" / "releases" / "RELEASE_v6.2.3.md").read_text(encoding="utf-8")
+        release_text = (root / "docs" / "releases" / "RELEASE_v6.2.4.md").read_text(encoding="utf-8")
 
-        self.assertEqual(PVM.__version__, "6.2.3")
+        self.assertEqual(PVM.__version__, "6.2.4")
         self.assertEqual(PVM.SCRIPT_VERSION, f"PVM-standard-{PVM.__version__}")
         self.assertIn("PVM License v1.3", license_text)
         self.assertIn("利用者が個人であること", license_text)
@@ -47,7 +71,7 @@ class Pvm620Tests(unittest.TestCase):
         self.assertIn("年額の標準プラン", faq_text)
         self.assertIn("PVM License v1.3", faq_text)
         self.assertIn("PVM License v1.3", readme_text)
-        self.assertIn("PVM Standard 6.2.3", release_text)
+        self.assertIn("PVM Standard 6.2.4", release_text)
 
     def test_baseline_auto_selection_uses_matching_project_name_only(self):
         with tempfile.TemporaryDirectory() as td:

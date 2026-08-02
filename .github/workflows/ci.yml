@@ -12,7 +12,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  PVM_EXPECTED_VERSION: "PVM-standard-6.2.3"
+  PVM_EXPECTED_VERSION: "PVM-standard-6.2.4"
 
 jobs:
   # 軽量スモーク: --self-check は torch / transformers を必要としないため、
