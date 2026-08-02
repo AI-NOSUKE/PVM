@@ -2463,6 +2463,38 @@ def export_report(run_dir: Path, report: Dict[str, Any]) -> None:
     log.info("レポート出力: %s", run_dir / "結果レポート.json")
 
 
+def with_lock_resample_caveat(
+    report: Dict[str, Any],
+    selection_tier: str,
+    *,
+    emit_warning: bool = False,
+) -> Dict[str, Any]:
+    """Attach the 6.2.0 resample-lock limitation to an initial commit report."""
+    applies = str(selection_tier) == "strict_full"
+    caveat = {
+        "applies": applies,
+        "reason": (
+            "selection_score does not yet weigh resample lock stability"
+            if applies else "not applicable to degraded selection"
+        ),
+        "mitigation": (
+            "use --show-candidates then --use-plan to pick a lower-dim plan"
+            if applies else None
+        ),
+        "planned_fix": "6.3.0" if applies else None,
+    }
+    if applies and emit_warning:
+        log.warning(
+            "採用planは複数の意味軸を保持する構成です。seed安定性は検証済みですが、"
+            "train標本の取り方に対するlock再標本安定性は6.2.0の選択基準に含まれていません。"
+            "lock堅牢性を最優先する場合は --show-candidates で確認のうえ低次元planを "
+            "--use-plan で選べます（6.3.0で再標本lock安定性を選択へ統合予定）。"
+        )
+    enriched = dict(report)
+    enriched["lock_resample_caveat"] = caveat
+    return enriched
+
+
 def _safe_ratio(part: int, whole: int) -> float:
     return 0.0 if whole <= 0 else float(part) / float(whole)
 
@@ -4164,6 +4196,9 @@ def main() -> None:
                 raise RuntimeError("採用候補をcanonical ICA次元のまま再現できませんでした。baselineは保存しません。")
         elif str(fit["transform_mode"]) != chosen.transform_mode:
             raise RuntimeError("degraded候補の処理経路を再現できませんでした。baselineは保存しません。")
+        commit_report_caveat = with_lock_resample_caveat(
+            {}, chosen.selection_tier, emit_warning=True,
+        )["lock_resample_caveat"]
         if not strict_commit:
             log.warning(
                 "degraded候補を採用します: mode=%s reason=%s",
@@ -4272,6 +4307,7 @@ def main() -> None:
             "fallback_level": int(fit["bundle"].fallback_level),
             "quality_gate_status": analysis_info.get("quality_gate_status", "pass"),
             "quality": analysis_info,
+            "lock_resample_caveat": commit_report_caveat,
         })
         export_ai_prompt_pack(
             run_dir,
