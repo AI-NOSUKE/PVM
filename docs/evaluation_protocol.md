@@ -2,7 +2,7 @@
 
 ## Purpose
 
-This document describes how to evaluate PVM Standard 6.x (current release: 6.2.1) without overstating what internal clustering metrics can prove.
+This document describes how to evaluate PVM Standard 6.x (current release: 6.2.2) without overstating what internal clustering metrics can prove.
 
 PVM is not a ground-truth label reproducer. It is a practical pipeline for visualizing the semantic structure of free-text responses and then operating that structure as a locked baseline across future datasets.
 

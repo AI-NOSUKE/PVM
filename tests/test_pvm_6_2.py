@@ -25,6 +25,32 @@ class _FakeICA:
 
 
 class Pvm620Tests(unittest.TestCase):
+    def test_baseline_auto_selection_uses_matching_project_name_only(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (PVM.history_root(root, "sample_texts") / "v001").mkdir(parents=True)
+
+            project, exists, resolution = PVM.resolve_default_baseline_project(
+                root, "customer", None,
+            )
+            self.assertEqual((project, exists, resolution), ("customer", False, "none"))
+
+            project, exists, resolution = PVM.resolve_default_baseline_project(
+                root, "sample_texts", None,
+            )
+            self.assertEqual((project, exists, resolution), ("sample_texts", True, "project"))
+
+            project, exists, resolution = PVM.resolve_default_baseline_project(
+                root, "customer", "sample_texts",
+            )
+            self.assertEqual((project, exists, resolution), ("sample_texts", True, "explicit"))
+
+    def test_restore_requires_project_or_baseline_from(self):
+        args = SimpleNamespace(baseline_from=None, project=None)
+        with tempfile.TemporaryDirectory() as td:
+            with self.assertRaisesRegex(PVM.BaselineSelectionError, r"baseline 名を推測しません"):
+                PVM._restore_only(Path(td), args)
+
     def test_windows_utf8_restart_command_preserves_original_invocation(self):
         flags = SimpleNamespace(utf8_mode=0)
         with (

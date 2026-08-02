@@ -6,7 +6,7 @@
 **rank=1 が最良**で、`--use-plan N` の **N にはこの rank 値**を渡します。
 2回目以降は既存の基準に基づくロック実行がデフォルトです。`--unlock` で新話題のみを吸収して基準を拡張できます。
 
-現行版は **PVM Standard 6.2.1** です。6.2.0でICA①次元とクラスタ数の探索を拡張し、Centroid Projectionが実際に圧縮した候補と、ICA①の意味軸を確認できる出力を追加しました。6.2.1では日本語WindowsでのRuri読込時に必要なUTF-8モードを、`PVM.py`の直接実行時に自動で扱います。探索、lock/unlock、baseline schema 2.1は6.2.0から変更していません。schema 2.0 baselineも警告付きで読み込めますが、ICA①空間gateは使われません。
+現行版は **PVM Standard 6.2.2** です。6.2.0でICA①次元とクラスタ数の探索を拡張し、Centroid Projectionが実際に圧縮した候補と、ICA①の意味軸を確認できる出力を追加しました。6.2.1では日本語WindowsのUTF-8起動を自動化し、6.2.2では同名projectのbaselineだけを自動読込するよう選択ルールを明確化しました。別名baselineを使う場合は`--baseline-from NAME`で明示します。baseline schemaは2.1のままです。schema 2.0 baselineも警告付きで読み込めますが、ICA①空間gateは使われません。
 
 ## 2. 入力データ
 - 既定設定で `python PVM.py` を実行可能（必要に応じてオプションで上書き）。
@@ -69,9 +69,9 @@ python PVM.py --unlock   # アンロック（新話題のみ追加）
 - `--show-candidates` / `--候補表示`：候補出力のみ（基準は作らない）
 - `--use-plan N` / `--採用プラン N`：候補から **rank=N** の案を採用して基準作成
 - `--unlock` / `--柔軟適用`：新話題を基準に追加して保存
-- `--baseline-from NAME` / `--基準流用 NAME`：他プロジェクトの基準を参照
+- `--baseline-from NAME` / `--基準流用 NAME`：他projectのbaselineを明示的に参照。別名baselineは未指定では自動読込されない
 - `--baseline-version vXXX`：lock / unlock 時に使用する baseline version を明示（既定：最新版）
-- `--restore-version vXXX`：指定 version を復元保存して終了
+- `--restore-version vXXX`：指定versionを復元保存して終了。同名を戻す場合も`--project NAME`を併記
 - `--project NAME`：分析とbaselineを識別する名前（例：`顧客アンケート`）。同じ分析の初回・lock・unlockでは同じ名前を使う
 - `--input_xlsx PATH` / `--input_csv PATH`：入力データの上書き指定
 - `--text_col NAME` / `--id_col NAME`：列名を指定

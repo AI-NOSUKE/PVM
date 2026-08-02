@@ -47,15 +47,16 @@ Embedding
 PVM Standard 6.x の要点:
 
 - 新標準は `Embedding → PCA → ICA① → Cluster① → Centroid Projection → Cluster②` です。
-- **v6.2.1 が現行版**です。v6.2.0の探索・schemaを維持し、日本語WindowsでRuri読込時に起きる文字コード不整合をCLI起動時に自動回避します。
+- **v6.2.2 が現行版**です。同名projectのbaselineだけを自動読込し、別名baselineの流用は`--baseline-from`で明示する安全な選択ルールにしました。v6.2.1のWindows UTF-8対応も含みます。
 - ICA①は意味軸、Centroid Projection後の座標はクラスタリング・lock用の境界整理空間です。初回baselineでは `ICA軸レポート.md` を既定出力し、両者を分けて確認できます。
 - `--search-budget fast|standard|thorough` で探索コストを選べます。通常は `standard`、埋め込み後の探索を短縮したい場合は `fast` を使います。
 - exact検証に失敗したseedは混在次元のARIへ入れず記録します。完全版が成立しない場合だけ従来のICA/PCA退避経路へ進み、`selection_tier=degraded` として明示します。
 - v6.1.1 は v6.1.0 に対する unlock再保存バグ修正でした。
-- v6.2.1 の `SCRIPT_VERSION` は `PVM-standard-6.2.1`、`SCHEMA_VERSION` は `2.1` です。v6.2.0のschema 2.1 baselineはそのまま利用できます。
+- v6.2.2 の `SCRIPT_VERSION` は `PVM-standard-6.2.2`、`SCHEMA_VERSION` は `2.1` です。既存のschema 2.1 baselineはそのまま利用できます。
 - v6.1.0 では候補選定の主指標を全候補共通の PCA L2 評価空間で計算し、射影後空間の指標は診断用に分離しています。
 - schema 2.0 baseline は警告付きで読み込み可能です。この場合、追加された ICA① 空間 gate は使わず、従来通り final空間 gate のみで動作します。
 - 評価では内部指標だけに依存せず、安定性、holdoutへのlock適用、クラスタ解釈の一貫性を確認します。
+- [PVM Standard 6.2.2 Release Notes](./RELEASE_v6.2.2.md)
 - [PVM Standard 6.2.1 Release Notes](./RELEASE_v6.2.1.md)
 - [PVM Standard 6.2.0 Release Notes](./RELEASE_v6.2.0.md)
 - [PVM Standard 6.1.2 Release Notes](./RELEASE_v6.1.2.md)
@@ -163,6 +164,8 @@ python PVM.py --input_csv examples/sample_texts.csv --use-plan 1
 ```
 
 `examples/sample_texts.csv`は50件の動作確認用データです。処理経路と出力の確認には使えますが、クラスタ品質の判定には小さすぎます。`degraded`やbaseline見直しの警告が出ても、サンプルでの動作確認自体が失敗したという意味ではありません。実データでは100件以上を目安にしてください。
+
+この実行で作られる`baseline_sample_texts`は、project名が`sample_texts`の実行だけで自動読込されます。別の入力ファイルや別の`--project`で始める実データ分析には自動適用されません。意図的に別名baselineを使う場合だけ`--baseline-from sample_texts`のように指定します。
 
 インストール後の軽量チェック（埋め込みモデル不要）:
 
@@ -291,7 +294,7 @@ python PVM.py --use-plan 1
 - **再現性**：`--random_state` の固定 + **baselineロック** 運用を推奨。  
 - **project名**：同じ分析の初回・lock・unlockでは同じ`--project`を使います。別の分析だけ別名にしてください。実行回ごとに`1回目`、`2回目`と変える用途ではありません。
 - **旧baseline互換性**：schema 2.0 baseline は警告付きで読み込み可能ですが、ICA① 空間 gate は使われません。schema 1.1 など旧baselineは再作成してください。
-- **baselineの優先度**：`--baseline-from` ＞ 現在プロジェクトの baseline ＞ フォルダ内に baseline が1系列だけならそれを自動採用。複数ある場合は誤適用を避けるため明示指定が必要です。
+- **baselineの選択**：`--baseline-from`を指定した場合はそのbaseline、未指定なら現在projectと同名のbaselineだけを使います。別名baselineは1系列だけでも自動採用しません。
 - **モデル依存**：埋め込みモデル、embedding prefix、max_len を変えると軸解釈が変わります。一貫性のため同一設定での運用を推奨。
 - **プロジェクト分離**：異なる分析は `--project` で分けることで、基準の混在を防げます。
 
@@ -321,7 +324,7 @@ PVMは「正解ラベル再現器」ではありません。自由回答の意�
 
 ## ベンチマーク方針
 
-PVM Standard 6.x（現行版6.2.1）の有効性は、同じ入力データと同じembedding条件のもとで、複数の比較対象と並べて検証します。少なくとも以下を比較対象とします。
+PVM Standard 6.x（現行版6.2.2）の有効性は、同じ入力データと同じembedding条件のもとで、複数の比較対象と並べて検証します。少なくとも以下を比較対象とします。
 
 - embedding + spherical k-means
 - PCA → ICA① + spherical k-means
