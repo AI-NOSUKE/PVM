@@ -42,17 +42,21 @@ Embedding
 → Cluster②
 ```
 
-操作方法は従来とほぼ同じです。schema 2.0 baseline は警告付きで読み込み可能ですが、追加された ICA① 空間 gate は使われません。重要なプロジェクトでは v6.1.2 / schema 2.1 でbaselineを再作成してください。
+操作方法は従来とほぼ同じです。schema 2.0 baseline は警告付きで読み込み可能ですが、追加された ICA① 空間 gate は使われません。重要なプロジェクトでは v6.2.0 / schema 2.1 でbaselineを再作成してください。
 
 PVM Standard 6.x の要点:
 
 - 新標準は `Embedding → PCA → ICA① → Cluster① → Centroid Projection → Cluster②` です。
-- **v6.1.2 が現行版**です。lock / unlock の gate 閾値解決の一貫性修正（ドリフト制限の迂回防止、baseline 保存 unlock_q の引き継ぎ）と、表示・堅牢性の改善です。
+- **v6.2.0 が現行版**です。ICA①の探索を低次元固定の候補表から対数グリッド＋canonical次元のexact検証へ改め、Centroid Projectionが実際に圧縮した候補を完全版として扱います。
+- ICA①は意味軸、Centroid Projection後の座標はクラスタリング・lock用の境界整理空間です。初回baselineでは `ICA軸レポート.md` を既定出力し、両者を分けて確認できます。
+- `--search-budget fast|standard|thorough` で探索コストを選べます。通常は `standard`、埋め込み後の探索を短縮したい場合は `fast` を使います。
+- exact検証に失敗したseedは混在次元のARIへ入れず記録します。完全版が成立しない場合だけ従来のICA/PCA退避経路へ進み、`selection_tier=degraded` として明示します。
 - v6.1.1 は v6.1.0 に対する unlock再保存バグ修正でした。
-- v6.1.2 の `SCRIPT_VERSION` は `PVM-standard-6.1.2`、`SCHEMA_VERSION` は `2.1` です。schema 2.1 baseline はそのまま利用できます。
+- v6.2.0 の `SCRIPT_VERSION` は `PVM-standard-6.2.0`、`SCHEMA_VERSION` は `2.1` です。schema 2.1 baseline はそのまま利用できます。
 - v6.1.0 では候補選定の主指標を全候補共通の PCA L2 評価空間で計算し、射影後空間の指標は診断用に分離しています。
 - schema 2.0 baseline は警告付きで読み込み可能です。この場合、追加された ICA① 空間 gate は使わず、従来通り final空間 gate のみで動作します。
 - 評価では内部指標だけに依存せず、安定性、holdoutへのlock適用、クラスタ解釈の一貫性を確認します。
+- [PVM Standard 6.2.0 Release Notes](./RELEASE_v6.2.0.md)
 - [PVM Standard 6.1.2 Release Notes](./RELEASE_v6.1.2.md)
 - [PVM Standard 6.1.0 Release Notes](./RELEASE_v6.1.0.md)
 - [PVM Standard 6.0.0 Release Notes](./RELEASE_v6.0.0.md)
@@ -211,7 +215,7 @@ python PVM.py --use-plan 1
 
 `PVM.py` は、意図的に single-file local CLI として維持しています。これは未整理だからではなく、実務でのローカル利用、機密データの外部送信回避、導入の簡単さ、監査しやすさ、コピー配布しやすさを優先するための設計判断です。
 
-現行の `PVM.py` は約3900行の単一ファイルで、内部には embedding、transform、clustering、evaluation、baseline/history、lock/unlock、CLI の責務が含まれます。一般的なライブラリ設計であれば分割対象になり得ますが、PVMの標準配布形態では「1ファイルで完結し、ローカルで確認・実行できる」ことを重視しています。
+現行の `PVM.py` は単一ファイルで、内部には embedding、transform、clustering、evaluation、baseline/history、lock/unlock、CLI の責務が含まれます。一般的なライブラリ設計であれば分割対象になり得ますが、PVMの標準配布形態では「1ファイルで完結し、ローカルで確認・実行できる」ことを重視しています。
 
 将来的にライブラリ化、PyPI化、モジュール分割を検討する余地はあります。ただし、現時点の標準は single-file CLI であり、PVM Standard 6.x でもこの方針を維持します。
 
@@ -245,7 +249,9 @@ python PVM.py --use-plan 1
 | `--unlock-min-points N` | unlock時に新クラスタ候補として扱う最小件数 | 8 |
 | `--baseline-version vXXX` | lock / unlock 時に使用する baseline version を明示 | 最新版 |
 | `--restore-version vXXX` | 指定 version を復元保存して終了 | - |
-| `--max_ic_cols N` | `結果スコア.csv` に出力する IC 列の上限 | 全て |
+| `--search-budget MODE` | 初回探索の計算予算（`fast` / `standard` / `thorough`） | standard |
+| `--include-ica1-cols` | `結果スコア.csv` にICA①座標も追加（通常の意味軸確認は既定のレポートで可能） | なし |
+| `--max-cp-cols N` | `結果スコア.csv` に出力する最終座標列の上限（旧 `--max_ic_cols` も利用可） | 全て |
 | `--k_min N` / `--k_max N` | 候補探索の K 範囲 | 3 / 12 |
 | `--embedding_model NAME` | 埋め込みモデル | cl-nagoya/ruri-v3-310m |
 | `--embedding-prefix TEXT` | embedding前に付けるprefix。通常変更不要。`none` で空prefix | `トピック: ` |
@@ -261,11 +267,12 @@ python PVM.py --use-plan 1
 
 代表的な成果物（プロジェクトごとに `PVMresult/` 以下へ保存）：
 
-- `結果スコア.csv` … 各テキストのクラスタ割当・距離・IC 指標  
+- `結果スコア.csv` … 各テキストのクラスタ割当・距離・最終座標。完全版では `CP1...`、`--include-ica1-cols` 指定時は `ICA1_1...` も追加
+- `ICA軸レポート.md` … ICA①の代表軸と正負の極端文。意味軸をCP後の座標と混同せず確認するため初回baselineで既定出力
 - `結果レポート.json` … 実行情報・採用 Plan などのメタ情報  
 - `AI_解釈依頼.md` … クラスタ解釈・命名をAIに依頼するための代表文パケット
 - `AI_クラスタ一覧.csv` … クラスタごとの要約一覧
-- `k_candidates.csv` … 全候補一覧（d × K の組み合わせ評価）  
+- `k_candidates.csv` … exact検証した候補一覧。canonical次元、seed成功数、ICA軸診断、CPの変更率・境界集中度、`selection_tier` を含む
 - `k_candidates_stage2.csv` … 候補探索で上位になったPlan TOP5の比較（ica1_dim / ic2_dim / k / 各指標）
 - `k_candidates_assignments.csv` … 各候補での全テキストの割当情報  
 - `baseline_プロジェクト名/` … 基準情報（history でバージョン管理）

@@ -33,7 +33,7 @@ Current defaults
 - batch: 8
 """
 
-__version__ = "6.1.2"
+__version__ = "6.2.0"
 
 import argparse
 import json
@@ -58,6 +58,8 @@ from sklearn.decomposition import FastICA, PCA
 from sklearn.exceptions import ConvergenceWarning
 from sklearn.metrics import adjusted_rand_score, calinski_harabasz_score, davies_bouldin_score, silhouette_score
 from sklearn.preprocessing import StandardScaler
+from scipy.optimize import linear_sum_assignment
+from scipy.stats import kurtosis, spearmanr
 
 try:
     from tqdm import tqdm
@@ -91,7 +93,7 @@ except ImportError:  # pragma: no cover
 SCHEMA_VERSION = "2.1"
 PREVIOUS_SCHEMA_VERSION = "2.0"
 LEGACY_SCHEMA_VERSION = "1.1"
-SCRIPT_VERSION = "PVM-standard-6.1.2"
+SCRIPT_VERSION = "PVM-standard-6.2.0"
 DEFAULT_EMBEDDING_PREFIX = "トピック: "
 DEFAULT_MAX_LEN = 8192
 DEFAULT_BATCH = 8
@@ -135,6 +137,43 @@ class CandidateScoringConfig:
 
 
 @dataclass(frozen=True)
+class AdaptiveSearchConfig:
+    """Bounded two-stage search budget for canonical ICA candidates."""
+
+    name: str = "standard"
+    dim_candidates: int = 10
+    refinement_dims: int = 4
+    finalists: int = 8
+    seed_offsets: Tuple[int, ...] = (0, 10, 20)
+    shuffled_repeats: int = 1
+    shuffled_fraction: float = 0.70
+    ica_max_attempts: int = 16
+    ica_max_seconds: float = 60.0
+
+
+ADAPTIVE_SEARCH_PRESETS: Dict[str, AdaptiveSearchConfig] = {
+    "fast": AdaptiveSearchConfig(
+        name="fast", dim_candidates=7, refinement_dims=2, finalists=5,
+        seed_offsets=(0, 10), shuffled_repeats=0,
+        ica_max_attempts=8, ica_max_seconds=20.0,
+    ),
+    "standard": AdaptiveSearchConfig(),
+    "thorough": AdaptiveSearchConfig(
+        name="thorough", dim_candidates=14, refinement_dims=6, finalists=12,
+        seed_offsets=(0, 10, 20, 30, 40), shuffled_repeats=3,
+        shuffled_fraction=0.80, ica_max_attempts=32, ica_max_seconds=180.0,
+    ),
+}
+
+
+def resolve_adaptive_search_config(name: str = "standard") -> AdaptiveSearchConfig:
+    key = str(name or "standard").strip().lower()
+    if key not in ADAPTIVE_SEARCH_PRESETS:
+        raise ValueError(f"未知の search budget です: {name!r}")
+    return ADAPTIVE_SEARCH_PRESETS[key]
+
+
+@dataclass(frozen=True)
 class UnlockScoringConfig:
     hard_min_ratio: float = 0.03
     min_cluster_share: float = DEFAULT_MIN_CLUSTER_SHARE
@@ -161,6 +200,10 @@ class IcaRetryConfig:
         (10000, 3e-4),
         (15000, 1e-3),
     )
+    # Discovery permits a failed requested dimension to reveal a lower
+    # effective dimension. Canonical validation disables this so ARI is never
+    # computed across mixed dimensions.
+    allow_dim_fallback: bool = True
 
 
 CANDIDATE_SCORING = CandidateScoringConfig()
@@ -195,6 +238,7 @@ def ica_retry_cache_key(config: IcaRetryConfig) -> Tuple[Any, ...]:
         tuple(int(x) for x in config.seed_offsets),
         tuple(str(x) for x in config.algorithms),
         tuple((int(mi), float(tol)) for mi, tol in config.configs),
+        bool(config.allow_dim_fallback),
     )
 
 
@@ -550,27 +594,26 @@ class BaselineMeta:
 
 
 
-def propose_ica1_dims_from_pca_base(pca_base: Dict[str, Any], pca_var: float) -> List[int]:
-    """get_pca_base() の PCA 結果を再利用して ICA① 候補次元を作る。
+def propose_ica1_dims_from_pca_base(
+    pca_base: Dict[str, Any],
+    pca_var: float,
+    target_count: int = 10,
+) -> List[int]:
+    """PCA空間を対数間隔で覆う、計算予算付きICA①候補を返す。
 
-    候補提案のためだけに StandardScaler + PCA を二重 fit しない。
+    PCA累積寄与率は独立成分数の直接的な根拠ではない。低次元からPCA上限
+    までを等比的に覆い、候補数だけを ``target_count`` で制御する。
     """
+    del pca_var  # API compatibility; not a criterion for ICA dimensionality.
     explained = np.asarray(pca_base.get("explained_variance_ratio", []), dtype=np.float64)
     max_pcs = int(pca_base.get("n_pcs", len(explained)))
-    max_pcs = max(2, min(max_pcs, int(len(explained)))) if len(explained) else 2
-    cumulative = np.cumsum(explained[:max_pcs]) if len(explained) else np.array([1.0, 1.0])
-    dims = set()
-    for v in [0.70, 0.80, 0.90, 0.95, pca_var]:
-        n = int(np.searchsorted(cumulative, float(v)) + 1)
-        dims.add(max(2, min(n, max_pcs)))
-    for d in [2, 4, 8, 16, 24, 32]:
-        if d <= max_pcs:
-            dims.add(d)
-    dims = sorted(dims)
-    if len(dims) > 6:
-        idx = np.linspace(0, len(dims) - 1, 6).round().astype(int)
-        dims = [dims[i] for i in idx]
-    return sorted(set(dims))
+    if len(explained):
+        max_pcs = min(max_pcs, int(len(explained)))
+    max_pcs = max(2, max_pcs)
+    target = max(2, min(int(target_count), max_pcs))
+    dims = {2, max_pcs}
+    dims.update(int(round(x)) for x in np.geomspace(2.0, float(max_pcs), num=target))
+    return sorted(max(2, min(max_pcs, d)) for d in dims)
 
 
 def _fit_ica_with_retries(
@@ -583,8 +626,11 @@ def _fit_ica_with_retries(
     retry_cfg = ica_retry_config or DEFAULT_ICA_RETRY
     min_components = 2
     start_components = max(min_components, int(n_components))
-    component_candidates = list(range(start_components, min_components - 1, -1))
-    component_candidates = component_candidates[: max(4, min(retry_cfg.max_dim_candidates, len(component_candidates)))]
+    if retry_cfg.allow_dim_fallback:
+        component_candidates = list(range(start_components, min_components - 1, -1))
+        component_candidates = component_candidates[: max(4, min(retry_cfg.max_dim_candidates, len(component_candidates)))]
+    else:
+        component_candidates = [start_components]
     seed_candidates = [int(random_state + i) for i in retry_cfg.seed_offsets]
     algo_candidates = list(retry_cfg.algorithms)
     config_candidates = list(retry_cfg.configs)
@@ -637,6 +683,7 @@ def _fit_ica_with_retries(
                                 "max_attempts": int(retry_cfg.max_attempts),
                                 "max_seconds": float(retry_cfg.max_seconds),
                                 "max_dim_candidates": int(retry_cfg.max_dim_candidates),
+                                "allow_dim_fallback": bool(retry_cfg.allow_dim_fallback),
                             },
                         }
                     except (ValueError, RuntimeError, FloatingPointError, LinAlgError) as e:
@@ -1291,6 +1338,27 @@ class CandidateResult:
     fallback_level: int
     retry_count: int
     quality_gate_passed: bool
+    requested_ica1_dim: int = 0
+    effective_ica1_dim: int = 0
+    discovered_by_retry: bool = False
+    seed_attempted: int = 0
+    seed_success: int = 0
+    seed_success_rate: float = 0.0
+    failed_seeds: Optional[Dict[str, str]] = None
+    stability_status: str = "invalid"
+    cp_rank: int = 0
+    cp_reduction: int = 0
+    cp_effective: bool = False
+    changed_count: int = 0
+    changed_rate: float = 0.0
+    boundary_focus: float = 0.0
+    core_preservation: float = 0.0
+    usable_ic_count: int = 0
+    ic_signal_gain: float = 0.0
+    axis_diagnostics: Optional[List[Dict[str, Any]]] = None
+    search_budget: str = "standard"
+    selection_tier: str = "strict_full"
+    degraded_reason: Optional[str] = None
 
 
 
@@ -1363,6 +1431,140 @@ def relative_scale(values: List[float], higher_is_better: bool = True) -> List[f
 
 def seed_triplet(base_seed: int) -> List[int]:
     return [int(base_seed), int(base_seed + 10), int(base_seed + 20)]
+
+
+def _search_retry_config(
+    config: Optional[IcaRetryConfig],
+    search: AdaptiveSearchConfig,
+    *,
+    exact: bool,
+) -> IcaRetryConfig:
+    supplied = config or DEFAULT_ICA_RETRY
+    return replace(
+        supplied,
+        max_attempts=int(supplied.max_attempts or search.ica_max_attempts),
+        max_seconds=float(supplied.max_seconds or search.ica_max_seconds),
+        allow_dim_fallback=not exact,
+    )
+
+
+def _align_labels(reference: np.ndarray, target: np.ndarray, k: int) -> np.ndarray:
+    overlap = np.zeros((k, k), dtype=np.int64)
+    for a, b in zip(np.asarray(reference, dtype=int), np.asarray(target, dtype=int)):
+        if 0 <= a < k and 0 <= b < k:
+            overlap[a, b] += 1
+    rows, cols = linear_sum_assignment(-overlap)
+    mapping = {int(col): int(row) for row, col in zip(rows, cols)}
+    return np.asarray([mapping.get(int(x), int(x)) for x in target], dtype=int)
+
+
+def _assignment_margins(cluster: Dict[str, Any]) -> np.ndarray:
+    Xn = np.asarray(cluster["Xn"], dtype=np.float32)
+    Cn = l2_normalize(np.asarray(cluster["centroids"], dtype=np.float32))
+    D = cosine_distance_to_centroids(Xn, Cn)
+    ordered = np.partition(D, kth=1, axis=1)[:, :2]
+    ordered.sort(axis=1)
+    return (ordered[:, 1] - ordered[:, 0]).astype(np.float32)
+
+
+def cp_boundary_diagnostics(
+    cluster1: Dict[str, Any],
+    cluster2: Dict[str, Any],
+    k: int,
+) -> Dict[str, float]:
+    """CPの役割を全体分離でなく境界文書の整理として診断する。"""
+    lab1 = np.asarray(cluster1["labels"], dtype=int)
+    lab2 = _align_labels(lab1, np.asarray(cluster2["labels"], dtype=int), k)
+    changed = lab1 != lab2
+    margins = _assignment_margins(cluster1)
+    changed_count = int(changed.sum())
+    if len(margins) == 0:
+        return {"changed_count": 0, "changed_rate": 0.0, "boundary_focus": 0.0, "core_preservation": 0.0}
+    boundary_cut = float(np.quantile(margins, 0.25))
+    core_cut = float(np.quantile(margins, 0.50))
+    boundary_focus = float(np.mean(margins[changed] <= boundary_cut)) if changed_count else 0.0
+    core = margins > core_cut
+    core_preservation = 1.0 - float(np.mean(changed[core])) if np.any(core) else 1.0
+    return {
+        "changed_count": changed_count,
+        "changed_rate": float(np.mean(changed)),
+        "boundary_focus": boundary_focus,
+        "core_preservation": core_preservation,
+    }
+
+
+def _axis_extreme_count(n: int) -> int:
+    target = max(20, int(math.ceil(0.005 * max(n, 1))))
+    return max(1, min(target, 200, max(5, n // 10)))
+
+
+def _axis_reproducibility(base: np.ndarray, other: np.ndarray) -> np.ndarray:
+    d = min(base.shape[1], other.shape[1])
+    if d <= 0:
+        return np.zeros(0, dtype=np.float64)
+    corr = np.corrcoef(base[:, :d].T, other[:, :d].T)[:d, d:]
+    corr = np.nan_to_num(corr, nan=0.0, posinf=0.0, neginf=0.0)
+    rows, cols = linear_sum_assignment(-np.abs(corr))
+    out = np.zeros(d, dtype=np.float64)
+    for row, col in zip(rows, cols):
+        out[int(row)] = abs(float(corr[int(row), int(col)]))
+    return out
+
+
+def compute_axis_diagnostics(
+    base_values: np.ndarray,
+    repeated_values: Sequence[np.ndarray],
+    shuffled_values: Sequence[np.ndarray],
+) -> Tuple[List[Dict[str, Any]], int, float]:
+    """ICA軸の再現性・null超え信号・非重複性を分離して返す。"""
+    S = np.asarray(base_values, dtype=np.float32)
+    n, d = S.shape
+    reps = [_axis_reproducibility(S, np.asarray(x, dtype=np.float32)) for x in repeated_values]
+    reproducibility = np.mean(np.vstack(reps), axis=0) if reps else np.zeros(d, dtype=np.float64)
+    real_kurt = np.abs(np.asarray(kurtosis(S, axis=0, fisher=True, bias=False), dtype=np.float64))
+    null_kurt: List[float] = []
+    for values in shuffled_values:
+        kvals = np.abs(np.asarray(kurtosis(values, axis=0, fisher=True, bias=False), dtype=np.float64))
+        null_kurt.extend(float(x) for x in kvals if np.isfinite(x))
+    null_q95 = float(np.quantile(null_kurt, 0.95)) if null_kurt else 0.0
+    extreme_n = _axis_extreme_count(n)
+    pos_sets = [set(np.argsort(S[:, j])[-extreme_n:].tolist()) for j in range(d)]
+    neg_sets = [set(np.argsort(S[:, j])[:extreme_n].tolist()) for j in range(d)]
+    diagnostics: List[Dict[str, Any]] = []
+    for j in range(d):
+        max_overlap = 0.0
+        max_spearman = 0.0
+        for q in range(d):
+            if q == j:
+                continue
+            same = 0.5 * (
+                len(pos_sets[j] & pos_sets[q]) / max(len(pos_sets[j] | pos_sets[q]), 1)
+                + len(neg_sets[j] & neg_sets[q]) / max(len(neg_sets[j] | neg_sets[q]), 1)
+            )
+            flipped = 0.5 * (
+                len(pos_sets[j] & neg_sets[q]) / max(len(pos_sets[j] | neg_sets[q]), 1)
+                + len(neg_sets[j] & pos_sets[q]) / max(len(neg_sets[j] | pos_sets[q]), 1)
+            )
+            max_overlap = max(max_overlap, same, flipped)
+            rho = spearmanr(S[:, j], S[:, q]).statistic
+            if np.isfinite(rho):
+                max_spearman = max(max_spearman, abs(float(rho)))
+        nonredundancy = max(0.0, 1.0 - max(max_overlap, max_spearman))
+        signal = max(0.0, (float(real_kurt[j]) - null_q95) / max(float(real_kurt[j]), 1e-6))
+        axis_value = float(reproducibility[j]) * signal * nonredundancy
+        diagnostics.append({
+            "axis": int(j + 1),
+            "reproducibility": float(reproducibility[j]),
+            "abs_excess_kurtosis": float(real_kurt[j]),
+            "shuffled_abs_kurtosis_q95": float(null_q95),
+            "signal_over_shuffled": float(signal),
+            "extreme_overlap": float(max_overlap),
+            "max_abs_spearman": float(max_spearman),
+            "nonredundancy": float(nonredundancy),
+            "axis_value": axis_value,
+        })
+    usable = [row for row in diagnostics if row["axis_value"] >= 0.15]
+    return diagnostics, len(usable), float(sum(row["axis_value"] for row in usable))
 
 
 def get_pipeline_result(
@@ -1485,6 +1687,75 @@ def fallback_penalty_value(transform_mode: str) -> float:
     return 1.0
 
 
+def _degraded_fallback_candidates(
+    X: np.ndarray,
+    X_eval: np.ndarray,
+    requested_dims: Sequence[int],
+    k_lo: int,
+    k_hi: int,
+    pca_var: float,
+    random_state: int,
+    cache: Dict[Any, Any],
+    retry_config: IcaRetryConfig,
+    search_budget: str,
+    reason: str,
+) -> List[CandidateResult]:
+    """Build an explicitly degraded last-resort tier.
+
+    This preserves the historical ICA/PCA fallback path when strict canonical
+    validation produces no candidate. These rows never masquerade as a full
+    PVM result: the tier and failed quality gate are persisted in every export.
+    """
+    requested = int(requested_dims[0]) if requested_dims else 2
+    rows: List[CandidateResult] = []
+    for k in range(k_lo, k_hi + 1):
+        try:
+            res = get_pipeline_result(
+                X, pca_var, requested, k, random_state, cache,
+                ica_retry_config=retry_config,
+            )
+        except Exception as exc:
+            log.warning("degraded fallback候補 d=%d k=%d も失敗: %s", requested, k, exc)
+            continue
+        labels = np.asarray(res["labels"], dtype=int)
+        eval_metrics = calc_internal_metrics(X_eval, labels)
+        projected = calc_internal_metrics(res["Xn"], labels)
+        balance = entropy_balance(labels, k)
+        objective_eval = mean_centroid_similarity(X_eval, labels, k)
+        effective = int(res["bundle"].ica1_n_components)
+        cp_rank = int(res["bundle"].final_n_components)
+        sep_score = max(0.0, min(1.0, (eval_metrics["sil"] + 0.20) / 1.20))
+        total = 0.25 * sep_score + 0.15 * balance - CANDIDATE_SCORING.failed_gate_penalty
+        rows.append(CandidateResult(
+            rank=0, ica1_dim=requested, k=k, ic2_dim=cp_rank,
+            silhouette_eval_space=float(eval_metrics["sil"]),
+            ch_eval_space=float(eval_metrics["ch"]), db_eval_space=float(eval_metrics["db"]),
+            db_inv_eval_space=float(eval_metrics["db_inv"]),
+            mean_centroid_similarity_eval_space=float(objective_eval),
+            silhouette_projected_space=float(projected["sil"]),
+            ch_projected_space=float(projected["ch"]), db_projected_space=float(projected["db"]),
+            db_inv_projected_space=float(projected["db_inv"]), entropy_balance=float(balance),
+            stability=0.0, k_penalty=float(k_penalty_value(k, len(X))),
+            fallback_penalty=float(fallback_penalty_value(str(res["transform_mode"]))),
+            total_score=float(total), objective=float(objective_eval), sil=float(eval_metrics["sil"]),
+            ch=float(eval_metrics["ch"]), db=float(eval_metrics["db"]), db_inv=float(eval_metrics["db_inv"]),
+            random_state=int(random_state), transform_mode=str(res["transform_mode"]),
+            ica1_status=str(res["ica1_status"]), ica2_status=str(res["ica2_status"]),
+            fallback_level=int(res["fallback_level"]), retry_count=int(res["retry_count"]),
+            quality_gate_passed=False, requested_ica1_dim=requested,
+            effective_ica1_dim=effective, discovered_by_retry=(effective != requested),
+            seed_attempted=1, seed_success=1, seed_success_rate=1.0,
+            failed_seeds={}, stability_status="degraded", cp_rank=cp_rank,
+            cp_reduction=max(0, effective - cp_rank), cp_effective=False,
+            changed_count=0, changed_rate=0.0, boundary_focus=0.0, core_preservation=0.0,
+            usable_ic_count=0, ic_signal_gain=0.0, axis_diagnostics=[],
+            search_budget=search_budget, selection_tier="degraded",
+            degraded_reason=reason,
+        ))
+    rows.sort(key=lambda r: (-r.total_score, r.k_penalty, r.k))
+    return [replace(r, rank=i) for i, r in enumerate(rows, start=1)]
+
+
 def explore_candidates(
     X: np.ndarray,
     k_min: int,
@@ -1493,147 +1764,271 @@ def explore_candidates(
     random_state: int,
     cache: Dict[Any, Any],
     ica_retry_config: Optional[IcaRetryConfig] = None,
+    search_config: Optional[AdaptiveSearchConfig] = None,
 ) -> List[CandidateResult]:
+    """Discover canonical ICA dimensions, then validate finalists exactly.
+
+    Discovery may fall back to a lower dimension and registers that effective
+    dimension as a new canonical candidate. Validation disables dimensional
+    fallback, so labels from different effective dimensions are never mixed in
+    one ARI calculation.
+    """
     n = len(X)
     if n < 3:
         raise ValueError("データが3件未満です。最低3件以上必要です。")
-
+    cfg = search_config or ADAPTIVE_SEARCH_PRESETS["standard"]
     pca_base = get_pca_base(X, pca_var=pca_var, random_state=random_state, cache=cache)
-    # Candidate-selection metrics use one shared space across all candidates.
-    # Projected-space metrics are kept only as diagnostics because Centroid
-    # Projection is learned from each candidate's Cluster1 labels.
     X_eval = l2_normalize(pca_base["Xp"])
-    dims = propose_ica1_dims_from_pca_base(pca_base, pca_var)
+    dims = propose_ica1_dims_from_pca_base(pca_base, pca_var, cfg.dim_candidates)
     k_hi = min(int(k_max), n - 1)
     k_lo = max(2, int(k_min))
-    raw_rows: List[Dict[str, Any]] = []
-    total_plans = max(0, len(dims) * max(0, k_hi - k_lo + 1))
-    show_bar = sys.stdout.isatty()
-    log.info("候補探索を開始します: dims=%s, k=%d..%d, plans=%d", dims, k_lo, k_hi, total_plans)
-    progress = tqdm(total=total_plans, desc="候補探索", unit="案", disable=not show_bar)
+    if k_hi < k_lo:
+        raise ValueError("有効な k 範囲がありません。")
+    bounded_retry = _search_retry_config(ica_retry_config, cfg, exact=False)
+    exact_cfg = _search_retry_config(ica_retry_config, cfg, exact=True)
+    requested_by_effective: Dict[int, set[int]] = {}
+    screen_rows: List[Dict[str, Any]] = []
+    screened: set[int] = set()
 
-    try:
-        for d in dims:
-            for k in range(k_lo, k_hi + 1):
-                res = get_pipeline_result(X, pca_var=pca_var, ica1_dim=d, k=k, random_state=random_state, cache=cache, ica_retry_config=ica_retry_config)
-                labels = np.asarray(res["labels"], dtype=int)
-                eval_metrics = calc_internal_metrics(X_eval, labels)
-                projected_metrics = {
-                    "sil": float(res.get("silhouette_projected_space", res.get("sil", -1.0))),
-                    "ch": float(res.get("ch_projected_space", res.get("ch", 0.0))),
-                    "db": float(res.get("db_projected_space", res.get("db", 10.0))),
-                    "db_inv": float(res.get("db_inv_projected_space", res.get("db_inv", 0.0))),
-                }
-                objective_eval = mean_centroid_similarity(X_eval, labels, k)
-                bal = entropy_balance(labels, k)
-                stab = candidate_stability(X, pca_var=pca_var, ica1_dim=d, k=k, base_seed=random_state, cache=cache, ica_retry_config=ica_retry_config)
-                counts = np.bincount(labels, minlength=k)
-                min_count = int(counts.min()) if len(counts) else 0
-                gate_pass = bool(
-                    eval_metrics["sil"] >= MIN_EVAL_SILHOUETTE
-                    and min_count >= max(3, int(math.ceil(DEFAULT_MIN_CLUSTER_SHARE * max(n, 1))))
-                )
-                raw_rows.append(
-                    {
-                        "ica1_dim": int(d),
-                        "k": int(k),
-                        "ic2_dim": int(res["bundle"].final_n_components),
-                        "silhouette_eval_space": float(eval_metrics["sil"]),
-                        "ch_eval_space": float(eval_metrics["ch"]),
-                        "db_eval_space": float(eval_metrics["db"]),
-                        "db_inv_eval_space": float(eval_metrics["db_inv"]),
-                        "mean_centroid_similarity_eval_space": float(objective_eval),
-                        "silhouette_projected_space": float(projected_metrics["sil"]),
-                        "ch_projected_space": float(projected_metrics["ch"]),
-                        "db_projected_space": float(projected_metrics["db"]),
-                        "db_inv_projected_space": float(projected_metrics["db_inv"]),
-                        "objective": float(objective_eval),
-                        "entropy_balance": float(bal),
-                        "stability": float(stab),
-                        "k_penalty": float(k_penalty_value(k, n)),
-                        "fallback_penalty": float(fallback_penalty_value(str(res["transform_mode"]))),
-                        "transform_mode": str(res["transform_mode"]),
-                        "ica1_status": str(res["ica1_status"]),
-                        "ica2_status": str(res["ica2_status"]),
-                        "fallback_level": int(res["fallback_level"]),
-                        "retry_count": int(res["retry_count"]),
-                        "quality_gate_passed": gate_pass,
-                    }
-                )
-                progress.update(1)
-    finally:
-        progress.close()
-
-    if not raw_rows:
-        raise RuntimeError("有効な候補が見つかりませんでした。")
-
-    sep_base = [
-        CANDIDATE_SCORING.sep_db_inv_weight * r["db_inv_eval_space"]
-        + CANDIDATE_SCORING.sep_sil_weight
-        * max(0.0, min(1.0, (r["silhouette_eval_space"] + CANDIDATE_SCORING.sep_sil_shift) / CANDIDATE_SCORING.sep_sil_scale))
-        + CANDIDATE_SCORING.sep_objective_weight * max(0.0, min(1.0, r["mean_centroid_similarity_eval_space"]))
-        for r in raw_rows
-    ]
-    sep_scaled = relative_scale(sep_base, higher_is_better=True)
-    bal_scaled = relative_scale([r["entropy_balance"] for r in raw_rows], higher_is_better=True)
-    stab_scaled = relative_scale([r["stability"] for r in raw_rows], higher_is_better=True)
-    pen_scaled = relative_scale([r["k_penalty"] for r in raw_rows], higher_is_better=False)
-    fb_scaled = relative_scale([r["fallback_penalty"] for r in raw_rows], higher_is_better=False)
-
-    results: List[CandidateResult] = []
-    for i, row in enumerate(raw_rows):
-        total = (
-            CANDIDATE_SCORING.total_sep_weight * sep_scaled[i]
-            + CANDIDATE_SCORING.total_stability_weight * stab_scaled[i]
-            + CANDIDATE_SCORING.total_balance_weight * bal_scaled[i]
-            + CANDIDATE_SCORING.total_k_penalty_weight * pen_scaled[i]
-            + CANDIDATE_SCORING.total_fallback_penalty_weight * fb_scaled[i]
-        )
-        if not row["quality_gate_passed"]:
-            total -= CANDIDATE_SCORING.failed_gate_penalty
-        results.append(
-            CandidateResult(
-                rank=0,
-                ica1_dim=row["ica1_dim"],
-                k=row["k"],
-                ic2_dim=row["ic2_dim"],
-                silhouette_eval_space=row["silhouette_eval_space"],
-                ch_eval_space=row["ch_eval_space"],
-                db_eval_space=row["db_eval_space"],
-                db_inv_eval_space=row["db_inv_eval_space"],
-                mean_centroid_similarity_eval_space=row["mean_centroid_similarity_eval_space"],
-                silhouette_projected_space=row["silhouette_projected_space"],
-                ch_projected_space=row["ch_projected_space"],
-                db_projected_space=row["db_projected_space"],
-                db_inv_projected_space=row["db_inv_projected_space"],
-                entropy_balance=row["entropy_balance"],
-                stability=row["stability"],
-                k_penalty=row["k_penalty"],
-                fallback_penalty=row["fallback_penalty"],
-                total_score=float(total),
-                objective=row["objective"],
-                sil=row["silhouette_eval_space"],
-                ch=row["ch_eval_space"],
-                db=row["db_eval_space"],
-                db_inv=row["db_inv_eval_space"],
-                random_state=int(random_state),
-                transform_mode=row["transform_mode"],
-                ica1_status=row["ica1_status"],
-                ica2_status=row["ica2_status"],
-                fallback_level=row["fallback_level"],
-                retry_count=row["retry_count"],
-                quality_gate_passed=row["quality_gate_passed"],
+    def discover_and_screen(requested_dims: Sequence[int]) -> None:
+        for requested in requested_dims:
+            discovered = get_stage1_result(
+                X, pca_var, int(requested), random_state, cache,
+                ica_retry_config=bounded_retry,
             )
+            if not discovered["ica1_success"]:
+                continue
+            effective = int(discovered["d1"])
+            requested_by_effective.setdefault(effective, set()).add(int(requested))
+            if effective in screened:
+                continue
+            canonical = get_stage1_result(
+                X, pca_var, effective, random_state, cache,
+                ica_retry_config=exact_cfg,
+            )
+            if not canonical["ica1_success"] or int(canonical["d1"]) != effective:
+                continue
+            screened.add(effective)
+            for k in range(k_lo, k_hi + 1):
+                cluster1 = spherical_kmeans(canonical["Xi1"], k=k, random_state=random_state)
+                metrics = calc_internal_metrics(X_eval, cluster1["labels"])
+                counts = np.bincount(cluster1["labels"], minlength=k)
+                gate = bool(
+                    metrics["sil"] >= MIN_EVAL_SILHOUETTE
+                    and int(counts.min()) >= max(3, int(math.ceil(DEFAULT_MIN_CLUSTER_SHARE * n)))
+                )
+                screen_rows.append({
+                    "requested": int(requested), "d": effective, "k": k,
+                    "sil": float(metrics["sil"]), "db_inv": float(metrics["db_inv"]),
+                    "balance": float(entropy_balance(cluster1["labels"], k)),
+                    "gate": gate,
+                })
+
+    discover_and_screen(dims)
+    if not screen_rows:
+        reason = "canonical次元で収束したICA①候補がないため、既存fallback経路を使用"
+        log.warning("%s。結果はdegradedとして明示します。", reason)
+        fallback_rows = _degraded_fallback_candidates(
+            X, X_eval, dims, k_lo, k_hi, pca_var, random_state, cache,
+            bounded_retry, cfg.name, reason,
         )
+        if fallback_rows:
+            return fallback_rows
+        raise RuntimeError("canonical次元とdegraded fallbackの両方で候補が見つかりませんでした。")
 
-    results.sort(key=lambda r: (not r.quality_gate_passed, -r.total_score, r.fallback_level, -r.stability, -r.entropy_balance, -r.silhouette_eval_space))
+    def screen_key(row: Dict[str, Any]) -> Tuple[Any, ...]:
+        return (not row["gate"], -row["sil"], -row["db_inv"], -row["balance"], row["d"], row["k"])
+
+    screen_rows.sort(key=screen_key)
+    ordered_dims = sorted(screened)
+    refine: List[int] = []
+    for row in screen_rows:
+        d = int(row["d"])
+        pos = ordered_dims.index(d)
+        for neighbor in ([ordered_dims[pos - 1]] if pos > 0 else []) + ([ordered_dims[pos + 1]] if pos + 1 < len(ordered_dims) else []):
+            midpoint = int(round(math.sqrt(float(d) * float(neighbor))))
+            if midpoint not in screened and midpoint not in refine:
+                refine.append(midpoint)
+                if len(refine) >= cfg.refinement_dims:
+                    break
+        if len(refine) >= cfg.refinement_dims:
+            break
+    if refine:
+        log.info("ICA候補を局所refineします: %s", sorted(refine))
+        discover_and_screen(sorted(refine))
+        screen_rows.sort(key=screen_key)
+
+    # Select k independently in the shared PCA space, then reserve finalists
+    # around d ~= 2*(k-1) (and, outside fast mode, 4*(k-1)). This does not add
+    # dimension reward; it merely prevents a V3 silhouette screen from hiding
+    # candidates where CP has meaningful within-class directions to discard.
+    pca_k_rows: List[Tuple[int, float, float]] = []
+    for k in range(k_lo, k_hi + 1):
+        pca_cluster = spherical_kmeans(pca_base["Xp"], k=k, random_state=random_state)
+        pca_metrics = calc_internal_metrics(X_eval, pca_cluster["labels"])
+        pca_k_rows.append((k, float(pca_metrics["sil"]), float(entropy_balance(pca_cluster["labels"], k))))
+    pca_k_rows.sort(key=lambda item: (-item[1], -item[2], item[0]))
+    anchor_k_count = min(len(pca_k_rows), max(2, cfg.finalists // 4))
+    anchor_multipliers = (2.0,) if cfg.name == "fast" else (2.0, 4.0)
+    anchors: List[Dict[str, Any]] = []
+    for k, _, _ in pca_k_rows[:anchor_k_count]:
+        rows_k = [r for r in screen_rows if int(r["k"]) == int(k) and int(r["d"]) > int(k - 1)]
+        for multiplier in anchor_multipliers:
+            target_d = max(2.0, multiplier * float(k - 1))
+            if rows_k:
+                anchors.append(min(rows_k, key=lambda r: (abs(math.log(max(float(r["d"]), 1.0) / target_d)), screen_key(r))))
+
+    # Reserve the remaining finalist budget for k diversity and screen quality.
+    best_by_k: Dict[int, Dict[str, Any]] = {}
+    for row in screen_rows:
+        best_by_k.setdefault(int(row["k"]), row)
+    selected: List[Dict[str, Any]] = []
+    selected_keys: set[Tuple[int, int]] = set()
+    diverse = sorted(best_by_k.values(), key=screen_key)[: max(1, cfg.finalists // 2)]
+    for row in anchors + diverse + screen_rows:
+        key = (int(row["d"]), int(row["k"]))
+        if key in selected_keys:
+            continue
+        selected.append(row)
+        selected_keys.add(key)
+        if len(selected) >= cfg.finalists:
+            break
+
+    log.info("canonical候補をexact検証します: %s", [(r["d"], r["k"]) for r in selected])
+    results: List[CandidateResult] = []
+    for row in selected:
+        d, k = int(row["d"]), int(row["k"])
+        successful: List[Tuple[int, Dict[str, Any], Dict[str, Any], Dict[str, Any]]] = []
+        failed: Dict[str, str] = {}
+        for offset in cfg.seed_offsets:
+            seed = int(random_state + offset)
+            stage1 = get_stage1_result(X, pca_var, d, seed, cache, exact_cfg)
+            if not stage1["ica1_success"] or int(stage1["d1"]) != d:
+                failed[str(seed)] = str(stage1.get("ica1_error") or "exact dimension mismatch")
+                continue
+            cluster1 = spherical_kmeans(stage1["Xi1"], k=k, random_state=seed)
+            res = get_pipeline_result(X, pca_var, d, k, seed, cache, exact_cfg)
+            if (
+                res["transform_mode"] != "full_original_pvm"
+                or int(res["bundle"].ica1_n_components) != d
+            ):
+                failed[str(seed)] = f"not strict full: {res['transform_mode']}"
+                continue
+            cluster2 = {
+                "labels": res["labels"], "Xn": res["Xn"],
+                "centroids": res["centroids"], "dists": res["dists"],
+            }
+            successful.append((seed, stage1, cluster1, {"pipeline": res, "cluster2": cluster2}))
+
+        success_count = len(successful)
+        if success_count == 0:
+            continue
+        base = next((item for item in successful if item[0] == random_state), successful[0])
+        base_seed, base_stage1, base_cluster1, base_wrap = base
+        base_res = base_wrap["pipeline"]
+        base_cluster2 = base_wrap["cluster2"]
+        label_runs = [np.asarray(item[3]["pipeline"]["labels"], dtype=int) for item in successful]
+        aris = [
+            adjusted_rand_score(label_runs[i], label_runs[j])
+            for i in range(len(label_runs)) for j in range(i + 1, len(label_runs))
+        ]
+        stability = float(np.mean(aris)) if aris else 0.0
+        success_rate = success_count / max(len(cfg.seed_offsets), 1)
+        stability_status = "reliable" if success_count == len(cfg.seed_offsets) else ("partial" if success_count >= 2 else "invalid")
+
+        shuffled_axes: List[np.ndarray] = []
+        for rep in range(cfg.shuffled_repeats):
+            rng = np.random.default_rng(random_state + 900 + rep)
+            size = max(d + 2, int(round(cfg.shuffled_fraction * n)))
+            idx = np.sort(rng.choice(n, size=min(size, n), replace=False))
+            Xs = np.array(X[idx], dtype=np.float32, copy=True)
+            for col in range(Xs.shape[1]):
+                Xs[:, col] = Xs[rng.permutation(len(Xs)), col]
+            null_stage = get_stage1_result(Xs, pca_var, d, random_state + 900 + rep, {}, exact_cfg)
+            if null_stage["ica1_success"] and int(null_stage["d1"]) == d:
+                shuffled_axes.append(np.asarray(null_stage["Xi1"], dtype=np.float32))
+        repeated_axes = [
+            np.asarray(item[1]["Xi1"], dtype=np.float32)
+            for item in successful if item[0] != base_seed
+        ]
+        axis_diag, usable_ic_count, ic_signal_gain = compute_axis_diagnostics(
+            np.asarray(base_stage1["Xi1"], dtype=np.float32), repeated_axes, shuffled_axes,
+        )
+        cp_diag = cp_boundary_diagnostics(base_cluster1, base_cluster2, k)
+        cp_rank = int(base_res["bundle"].final_n_components)
+        cp_effective = bool(cp_rank < d)
+        eval_metrics = calc_internal_metrics(X_eval, np.asarray(base_res["labels"], dtype=int))
+        objective_eval = mean_centroid_similarity(X_eval, base_res["labels"], k)
+        balance = entropy_balance(base_res["labels"], k)
+        counts = np.bincount(base_res["labels"], minlength=k)
+        min_count_ok = int(counts.min()) >= max(3, int(math.ceil(DEFAULT_MIN_CLUSTER_SHARE * n)))
+        quality_gate = bool(
+            stability_status != "invalid" and cp_effective and min_count_ok
+            and eval_metrics["sil"] >= MIN_EVAL_SILHOUETTE
+        )
+        sep_score = max(0.0, min(1.0, (eval_metrics["sil"] + 0.20) / 1.20))
+        ic_score = 1.0 - math.exp(-max(ic_signal_gain, 0.0))
+        cp_score = (
+            0.45 * float(cp_diag["boundary_focus"])
+            + 0.45 * float(cp_diag["core_preservation"])
+            + 0.10 * min(1.0, float(cp_diag["changed_rate"]) / 0.01)
+        ) if cp_effective else 0.0
+        total = 0.30 * stability + 0.25 * sep_score + 0.15 * balance + 0.20 * ic_score + 0.10 * cp_score
+        if stability_status == "partial":
+            total -= 0.05
+        if not quality_gate:
+            total -= CANDIDATE_SCORING.failed_gate_penalty
+        projected = calc_internal_metrics(base_res["Xn"], base_res["labels"])
+        requested_dims = sorted(requested_by_effective.get(d, {int(row["requested"])}))
+        results.append(CandidateResult(
+            rank=0, ica1_dim=d, k=k, ic2_dim=cp_rank,
+            silhouette_eval_space=float(eval_metrics["sil"]),
+            ch_eval_space=float(eval_metrics["ch"]), db_eval_space=float(eval_metrics["db"]),
+            db_inv_eval_space=float(eval_metrics["db_inv"]),
+            mean_centroid_similarity_eval_space=float(objective_eval),
+            silhouette_projected_space=float(projected["sil"]),
+            ch_projected_space=float(projected["ch"]), db_projected_space=float(projected["db"]),
+            db_inv_projected_space=float(projected["db_inv"]), entropy_balance=float(balance),
+            stability=stability, k_penalty=float(k_penalty_value(k, n)), fallback_penalty=0.0,
+            total_score=float(total), objective=float(objective_eval), sil=float(eval_metrics["sil"]),
+            ch=float(eval_metrics["ch"]), db=float(eval_metrics["db"]), db_inv=float(eval_metrics["db_inv"]),
+            random_state=int(base_seed), transform_mode=str(base_res["transform_mode"]),
+            ica1_status=str(base_res["ica1_status"]), ica2_status=str(base_res["ica2_status"]),
+            fallback_level=int(base_res["fallback_level"]), retry_count=int(base_res["retry_count"]),
+            quality_gate_passed=quality_gate, requested_ica1_dim=int(requested_dims[0]),
+            effective_ica1_dim=d, discovered_by_retry=any(x != d for x in requested_dims),
+            seed_attempted=len(cfg.seed_offsets), seed_success=success_count,
+            seed_success_rate=float(success_rate), failed_seeds=failed, stability_status=stability_status,
+            cp_rank=cp_rank, cp_reduction=int(d - cp_rank), cp_effective=cp_effective,
+            changed_count=int(cp_diag["changed_count"]), changed_rate=float(cp_diag["changed_rate"]),
+            boundary_focus=float(cp_diag["boundary_focus"]), core_preservation=float(cp_diag["core_preservation"]),
+            usable_ic_count=int(usable_ic_count), ic_signal_gain=float(ic_signal_gain),
+            axis_diagnostics=axis_diag, search_budget=cfg.name,
+            selection_tier="strict_full" if cp_effective else "degraded",
+            degraded_reason=None if cp_effective else "Centroid ProjectionがICA①次元を削減しない",
+        ))
+
+    if not results:
+        reason = "exact canonical検証を通過した候補がないため、既存fallback経路を使用"
+        log.warning("%s。結果はdegradedとして明示します。", reason)
+        results = _degraded_fallback_candidates(
+            X, X_eval, dims, k_lo, k_hi, pca_var, random_state, cache,
+            bounded_retry, cfg.name, reason,
+        )
+        if not results:
+            raise RuntimeError("exact canonical検証とdegraded fallbackの両方で候補が見つかりませんでした。")
+    reliable_exists = any(r.stability_status == "reliable" and r.quality_gate_passed for r in results)
+    results.sort(key=lambda r: (
+        not r.quality_gate_passed,
+        reliable_exists and r.stability_status != "reliable",
+        -r.total_score, r.k_penalty, r.effective_ica1_dim, r.k,
+    ))
     results = [replace(r, rank=i) for i, r in enumerate(results, start=1)]
-
-    mode_counts: Dict[str, int] = {}
-    for r in results:
-        mode_counts[r.transform_mode] = mode_counts.get(r.transform_mode, 0) + 1
-    mode_summary = ", ".join(f"{k}={v}" for k, v in sorted(mode_counts.items()))
-    log.info("候補探索完了: plans=%d, modes=[%s]", len(results), mode_summary)
+    log.info(
+        "候補探索完了: budget=%s candidates=%d best=(d=%d,k=%d,cp=%d,usable_ic=%d,status=%s)",
+        cfg.name, len(results), results[0].effective_ica1_dim, results[0].k,
+        results[0].cp_rank, results[0].usable_ic_count, results[0].stability_status,
+    )
     return results
 
 def baseline_root(result_root: Path, project: str) -> Path:
@@ -1912,7 +2307,15 @@ def export_candidate_assignments(
     out = df_src[keep_cols].copy()
     rows = []
     for r in top_results:
-        res = get_pipeline_result(X, pca_var=pca_var, ica1_dim=r.ica1_dim, k=r.k, random_state=r.random_state, cache=cache, ica_retry_config=ica_retry_config)
+        candidate_retry = replace(
+            ica_retry_config or DEFAULT_ICA_RETRY,
+            allow_dim_fallback=(r.selection_tier != "strict_full"),
+        )
+        requested_dim = (
+            r.effective_ica1_dim if r.selection_tier == "strict_full"
+            else (r.requested_ica1_dim or r.ica1_dim)
+        )
+        res = get_pipeline_result(X, pca_var=pca_var, ica1_dim=requested_dim, k=r.k, random_state=r.random_state, cache=cache, ica_retry_config=candidate_retry)
         out[f"cand{r.rank}_K{r.k}"] = res["labels"].astype(int)
         rows.append({
             "plan": r.rank,
@@ -1936,6 +2339,8 @@ def export_candidate_assignments(
             "transform_mode": r.transform_mode,
             "fallback_level": r.fallback_level,
             "quality_gate_passed": r.quality_gate_passed,
+            "selection_tier": r.selection_tier,
+            "degraded_reason": r.degraded_reason,
         })
     out.to_csv(run_dir / "k_candidates_assignments.csv", index=False, encoding="utf-8-sig")
     pd.DataFrame(rows).to_csv(run_dir / "k_candidates_stage2.csv", index=False, encoding="utf-8-sig")
@@ -1952,12 +2357,18 @@ def export_run_csv(
     dists: np.ndarray,
     max_ic_cols: Optional[int],
     extra_cols: Optional[Dict[str, Any]] = None,
+    Xica1: Optional[np.ndarray] = None,
+    include_ica1_cols: bool = False,
+    coordinate_prefix: str = "CP",
 ) -> None:
     out = df_src[keep_cols].copy()
     ic_total = Xfinal.shape[1]
     show_ic = ic_total if not max_ic_cols else min(ic_total, int(max_ic_cols))
     for i in range(show_ic):
-        out[f"IC{i+1}"] = Xfinal[:, i]
+        out[f"{coordinate_prefix}{i+1}"] = Xfinal[:, i]
+    if include_ica1_cols and Xica1 is not None:
+        for i in range(np.asarray(Xica1).shape[1]):
+            out[f"ICA1_{i+1}"] = np.asarray(Xica1)[:, i]
     out["cluster"] = labels.astype(int)
     out["dist"] = dists.astype(float)
     if extra_cols:
@@ -1965,6 +2376,85 @@ def export_run_csv(
             out[k] = v
     out.to_csv(run_dir / "結果スコア.csv", index=False, encoding="utf-8-sig")
     log.info("スコア出力: %s", run_dir / "結果スコア.csv")
+
+
+def final_coordinate_prefix(transform_mode: str) -> str:
+    if transform_mode == "full_original_pvm":
+        return "CP"
+    if transform_mode == "ica1_only_pvm":
+        return "FinalICA1_"
+    return "PC"
+
+
+def export_ica_axis_report(
+    run_dir: Path,
+    df_src: pd.DataFrame,
+    text_col: str,
+    Xica1: np.ndarray,
+    axis_diagnostics: Optional[Sequence[Dict[str, Any]]] = None,
+    max_axes: int = 12,
+    examples_per_side: int = 5,
+) -> List[Dict[str, Any]]:
+    """ICA①の意味軸候補を標準出力し、CP後の座標だけで隠さない。"""
+    S = np.asarray(Xica1, dtype=np.float32)
+    diag_by_axis = {int(row.get("axis", 0)): dict(row) for row in (axis_diagnostics or [])}
+    ranked = list(range(S.shape[1]))
+    ranked.sort(key=lambda j: (
+        -float(diag_by_axis.get(j + 1, {}).get("axis_value", 0.0)),
+        -abs(float(kurtosis(S[:, j], fisher=True, bias=False))),
+        j,
+    ))
+    ranked = ranked[: min(max_axes, len(ranked))]
+    cards: List[Dict[str, Any]] = []
+    lines = [
+        "# ICA① 意味軸候補レポート", "",
+        f"- ICA①次元: {S.shape[1]}",
+        f"- 表示軸数: {len(ranked)}（全座標が必要なら --include-ica1-cols）", "",
+        "CPはクラスタリングとlock用の圧縮空間です。意味軸の解釈はこのICA①空間を参照します。", "",
+        "axis_valueは再現性・シャッフル対照との差・非重複性の診断値です。数値通過は、人が読める意味軸であることを保証しません。正負の文書を読んで判定してください。", "",
+    ]
+    for j in ranked:
+        values = S[:, j]
+        pos = np.argsort(values)[::-1][:examples_per_side]
+        neg = np.argsort(values)[:examples_per_side]
+        diag = diag_by_axis.get(j + 1, {})
+        card = {
+            "axis": j + 1,
+            "axis_value": float(diag.get("axis_value", 0.0)),
+            "reproducibility": float(diag.get("reproducibility", 0.0)),
+            "signal_over_shuffled": float(diag.get("signal_over_shuffled", 0.0)),
+            "nonredundancy": float(diag.get("nonredundancy", 0.0)),
+            "positive_indices": [int(x) for x in pos],
+            "negative_indices": [int(x) for x in neg],
+        }
+        cards.append(card)
+        lines.extend([
+            f"## ICA1 axis {j + 1}", "",
+            f"- axis_value={card['axis_value']:.3f} / reproducibility={card['reproducibility']:.3f} / "
+            f"signal_over_shuffled={card['signal_over_shuffled']:.3f} / nonredundancy={card['nonredundancy']:.3f}",
+            "", "### 正側", "",
+        ])
+        for idx in pos:
+            lines.append(f"- {normalize_text(df_src.iloc[int(idx)][text_col])[:240]}")
+        lines.extend(["", "### 負側", ""])
+        for idx in neg:
+            lines.append(f"- {normalize_text(df_src.iloc[int(idx)][text_col])[:240]}")
+        lines.append("")
+    (run_dir / "ICA軸レポート.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    log.info("ICA①意味軸候補を出力: %s", run_dir / "ICA軸レポート.md")
+    return cards
+
+
+def export_ica_axis_unavailable_report(run_dir: Path, transform_mode: str, reason: Optional[str]) -> None:
+    lines = [
+        "# ICA① 意味軸候補レポート", "",
+        "この実行はICA①空間を作成できなかったため、意味軸候補は出力していません。", "",
+        f"- transform_mode: {transform_mode}",
+        f"- reason: {reason or 'ICA① unavailable'}", "",
+        "この結果はdegraded経路です。最終座標をICA①軸として解釈しないでください。", "",
+    ]
+    (run_dir / "ICA軸レポート.md").write_text("\n".join(lines), encoding="utf-8")
+    log.warning("ICA①軸は利用不可です: %s", run_dir / "ICA軸レポート.md")
 
 
 def export_report(run_dir: Path, report: Dict[str, Any]) -> None:
@@ -2005,11 +2495,11 @@ def _fmt_examples(df_src: pd.DataFrame, text_col: str, indices: Sequence[int], d
 
 def quality_note_from_mode(transform_mode: str) -> str:
     if transform_mode == "full_original_pvm":
-        return "PVM Standard 6.1.0 の標準経路で解析しています。"
+        return "PVM Standard 6.2.0 の標準経路で解析しています。"
     if transform_mode == "ica1_only_pvm":
-        return "ICA①までは使用し、centroid projection を省略した経路です。安定性を優先しています。"
+        return "ICA①までは使用し、centroid projection を省略したdegraded経路です。完全版と同等には扱いません。"
     if transform_mode == "pca_pvm":
-        return "ICAを用いない安定性優先の代替経路です。比較可能性は維持しています。"
+        return "ICAを用いないdegraded経路です。完全版と同等には扱わず、baselineの再確認が必要です。"
     return "解析経路情報が不明です。"
 
 
@@ -2200,6 +2690,7 @@ def export_ai_prompt_pack(
     boundary_n: int = 3,
     nearby_cluster_count: int = 2,
     nearby_examples_per_cluster: int = 2,
+    ica_axis_cards: Optional[Sequence[Dict[str, Any]]] = None,
 ) -> None:
     """
     AI向けの単一パケットを出力する。
@@ -2275,6 +2766,22 @@ def export_ai_prompt_pack(
     packet_lines.append('- 中心例を主に見つつ、周辺例・境界例で幅を補正する')
     packet_lines.append('- 無理に断定しすぎず、混在がある場合はそれを明記する')
     packet_lines.append('')
+    if ica_axis_cards:
+        packet_lines.append('## ICA①の意味軸（CP前）')
+        packet_lines.append('')
+        packet_lines.append('CP後の軸はクラスタリング・lock用の圧縮表現です。意味解釈には次のICA①軸も使ってください。')
+        packet_lines.append('')
+        for card in list(ica_axis_cards)[:8]:
+            axis = int(card['axis'])
+            packet_lines.append(
+                f'- ICA1 axis {axis}: axis_value={float(card.get("axis_value", 0.0)):.3f}, '
+                f'reproducibility={float(card.get("reproducibility", 0.0)):.3f}'
+            )
+            pos_texts = [normalize_text(df_src.iloc[int(i)][text_col])[:140] for i in card.get('positive_indices', [])[:3]]
+            neg_texts = [normalize_text(df_src.iloc[int(i)][text_col])[:140] for i in card.get('negative_indices', [])[:3]]
+            packet_lines.append(f'  - 正側: {" / ".join(pos_texts)}')
+            packet_lines.append(f'  - 負側: {" / ".join(neg_texts)}')
+        packet_lines.append('')
     packet_lines.append('## 出力フォーマット')
     packet_lines.append('- **Cluster k**')
     packet_lines.append('  - 名称案A: ...')
@@ -2898,7 +3405,7 @@ def _smoke_internal() -> None:
         rng.normal(-2, 0.3, size=(40, 8)),
     ]).astype(np.float32)
     cache: Dict[Any, Any] = {}
-    cands = explore_candidates(X, k_min=2, k_max=4, pca_var=0.9, random_state=42, cache=cache, ica_retry_config=smoke_ica_retry)
+    cands = explore_candidates(X, k_min=2, k_max=4, pca_var=0.9, random_state=42, cache=cache, ica_retry_config=smoke_ica_retry, search_config=ADAPTIVE_SEARCH_PRESETS["fast"])
     assert cands, "candidate search failed"
     best = cands[0]
     fit = get_pipeline_result(X, pca_var=0.9, ica1_dim=best.ica1_dim, k=best.k, random_state=best.random_state, cache=cache, ica_retry_config=smoke_ica_retry)
@@ -3021,7 +3528,10 @@ def _smoke_internal() -> None:
         present_label = int(fit["labels"][0])
         present_idx = np.where(np.asarray(fit["labels"], dtype=int) == present_label)[0][:12]
         assert len(present_idx) > 0
-        X_biased = np.vstack([X[present_idx], rng.normal(5, 0.2, size=(20, 8)).astype(np.float32)]).astype(np.float32)
+        # Adaptive search can select k=2 for this synthetic corpus. Adding far
+        # points may then hit the other base cluster and accidentally turn this
+        # into full coverage, so the coverage test passes one observed base only.
+        X_biased = X[present_idx].astype(np.float32)
         Xf_biased = apply_transforms(X_biased, bundle1)
         Xpre_biased = apply_pre_projection_space(X_biased, bundle1)
         prev_ica1_threshold = resolve_ica1_quantile_threshold(meta1, DEFAULT_UNLOCK_Q)
@@ -3253,6 +3763,7 @@ def _smoke_internal() -> None:
         random_state=13,
         cache={},
         ica_retry_config=smoke_ica_retry,
+        search_config=ADAPTIVE_SEARCH_PRESETS["fast"],
     )
     assert noise_cands[0].silhouette_eval_space < 0.15
 
@@ -3271,6 +3782,7 @@ def _smoke_internal() -> None:
         random_state=17,
         cache={},
         ica_retry_config=smoke_ica_retry,
+        search_config=ADAPTIVE_SEARCH_PRESETS["fast"],
     )
     assert k4_cands[0].k == 4 or 4 in [r.k for r in k4_cands[:3]]
 
@@ -3368,7 +3880,16 @@ def build_argparser() -> argparse.ArgumentParser:
     ap.add_argument("--unlock-add-k", dest="unlock_add_k", type=int, default=2)
     ap.add_argument("--unlock-min-points", dest="unlock_min_points", type=int, default=8)
 
-    ap.add_argument("--max_ic_cols", type=int, default=None)
+    ap.add_argument("--max_ic_cols", "--max-cp-cols", dest="max_ic_cols", type=int, default=None,
+                    help="結果スコア.csvへ出力する最終座標列の上限（旧名--max_ic_colsも互換維持）")
+    ap.add_argument(
+        "--include-ica1-cols", action="store_true",
+        help="結果スコア.csvへCP軸に加えてICA①の全座標を出力します",
+    )
+    ap.add_argument(
+        "--search-budget", choices=tuple(ADAPTIVE_SEARCH_PRESETS), default="standard",
+        help="初回候補探索の計算予算。通常はstandard、短縮はfast、精査はthorough",
+    )
     ap.add_argument("--ica-max-attempts", dest="ica_max_attempts", type=int, default=0,
                     help="ICA retry の最大試行数。0なら標準候補グリッドを最後まで試す")
     ap.add_argument("--ica-timeout-sec", dest="ica_timeout_sec", type=float, default=0.0,
@@ -3502,6 +4023,7 @@ def main() -> None:
     setup_logging(args.log_level)
     quiet_third_party_noise(args.log_level)
     ica_retry_config = build_ica_retry_config(args.ica_max_attempts, args.ica_timeout_sec)
+    adaptive_search_config = resolve_adaptive_search_config(args.search_budget)
     embedding_prefix = resolve_embedding_prefix(args.embedding_prefix)
 
     if args.version:
@@ -3599,9 +4121,9 @@ def main() -> None:
     # exploration-only path
     if args.show_candidates:
         log.info("🧭 候補探索のみを実行します。baseline は更新しません。")
-        results = explore_candidates(X, args.k_min, args.k_max, args.pca_var, args.random_state, cache, ica_retry_config=ica_retry_config)
+        results = explore_candidates(X, args.k_min, args.k_max, args.pca_var, args.random_state, cache, ica_retry_config=ica_retry_config, search_config=adaptive_search_config)
         export_candidates(run_dir, results)
-        export_candidate_assignments(run_dir, df, keep_cols, X, args.pca_var, results[:5], cache, ica_retry_config=ica_retry_config)
+        export_candidate_assignments(run_dir, df, keep_cols, X, args.pca_var, results[:5], cache, ica_retry_config=_search_retry_config(ica_retry_config, adaptive_search_config, exact=True))
         export_report(run_dir, {
             "n": n,
             "project": project,
@@ -3622,21 +4144,48 @@ def main() -> None:
             log.info("🧭 初回（自動基準作成）: ベスト Plan を自動採用して baseline を作成します。")
         else:
             log.info("🧭 明示採用（baseline 更新）: 指定 Plan で新しい baseline 版を作成します。")
-        results = explore_candidates(X, args.k_min, args.k_max, args.pca_var, args.random_state, cache, ica_retry_config=ica_retry_config)
+        results = explore_candidates(X, args.k_min, args.k_max, args.pca_var, args.random_state, cache, ica_retry_config=ica_retry_config, search_config=adaptive_search_config)
         export_candidates(run_dir, results)
-        export_candidate_assignments(run_dir, df, keep_cols, X, args.pca_var, results[:5], cache, ica_retry_config=ica_retry_config)
+        exact_commit_config = _search_retry_config(ica_retry_config, adaptive_search_config, exact=True)
+        export_candidate_assignments(run_dir, df, keep_cols, X, args.pca_var, results[:5], cache, ica_retry_config=exact_commit_config)
         chosen = choose_result_by_plan(results, args.use_plan)
-        fit = get_pipeline_result(X, args.pca_var, chosen.ica1_dim, chosen.k, chosen.random_state, cache, ica_retry_config=ica_retry_config)
+        strict_commit = chosen.selection_tier == "strict_full"
+        commit_config = replace(exact_commit_config, allow_dim_fallback=not strict_commit)
+        commit_dim = (
+            chosen.effective_ica1_dim if strict_commit
+            else (chosen.requested_ica1_dim or chosen.ica1_dim)
+        )
+        fit = get_pipeline_result(X, args.pca_var, commit_dim, chosen.k, chosen.random_state, cache, ica_retry_config=commit_config)
+        if strict_commit:
+            if (
+                fit["transform_mode"] != "full_original_pvm"
+                or int(fit["bundle"].ica1_n_components) != int(chosen.effective_ica1_dim)
+            ):
+                raise RuntimeError("採用候補をcanonical ICA次元のまま再現できませんでした。baselineは保存しません。")
+        elif str(fit["transform_mode"]) != chosen.transform_mode:
+            raise RuntimeError("degraded候補の処理経路を再現できませんでした。baselineは保存しません。")
+        if not strict_commit:
+            log.warning(
+                "degraded候補を採用します: mode=%s reason=%s",
+                chosen.transform_mode, chosen.degraded_reason,
+            )
         centroids = l2_normalize(fit["centroids"])  # base only on commit
         commit_unlock_q = resolve_effective_unlock_q(args.unlock_q, None)
         base_threshold = float(np.quantile(fit["dists"], commit_unlock_q))
         Xpre_fit = apply_pre_projection_space(X, fit["bundle"])
-        ica1_state = compute_pre_projection_gate_state(
-            Xpre_norm=Xpre_fit,
-            labels=fit["labels"],
-            k=int(centroids.shape[0]),
-            unlock_q=commit_unlock_q,
-        )
+        if int(fit["bundle"].ica1_n_components) > 0:
+            ica1_state = compute_pre_projection_gate_state(
+                Xpre_norm=Xpre_fit,
+                labels=fit["labels"],
+                k=int(centroids.shape[0]),
+                unlock_q=commit_unlock_q,
+            )
+        else:
+            ica1_state = {
+                "ica1_centroids": None,
+                "ica1_base_threshold": None,
+                "ica1_base_distance_quantiles": None,
+            }
         meta = BaselineMeta(
             project=project,
             mode="first" if not baseline_exists else "manual_commit",
@@ -3649,7 +4198,10 @@ def main() -> None:
             base_threshold=float(base_threshold),
             extra_accept_thresholds=[],
             base_distance_quantiles=quantile_table(fit["dists"]),
-            ica1_base_threshold=float(ica1_state["ica1_base_threshold"]),
+            ica1_base_threshold=(
+                float(ica1_state["ica1_base_threshold"])
+                if ica1_state["ica1_base_threshold"] is not None else None
+            ),
             ica1_base_distance_quantiles=ica1_state["ica1_base_distance_quantiles"],
             unlock_q=commit_unlock_q,
             extra_relative_advantage=float(DEFAULT_EXTRA_REL_ADV),
@@ -3660,7 +4212,22 @@ def main() -> None:
             chosen_plan=asdict(chosen),
             source_baseline=None,
         )
-        export_run_csv(run_dir, df, keep_cols, fit["Xfinal"], fit["labels"], fit["dists"], args.max_ic_cols)
+        export_run_csv(
+            run_dir, df, keep_cols, fit["Xfinal"], fit["labels"], fit["dists"], args.max_ic_cols,
+            Xica1=(Xpre_fit if int(fit["bundle"].ica1_n_components) > 0 else None),
+            include_ica1_cols=args.include_ica1_cols,
+            coordinate_prefix=final_coordinate_prefix(str(fit["bundle"].transform_mode)),
+        )
+        if int(fit["bundle"].ica1_n_components) > 0:
+            ica_axis_cards = export_ica_axis_report(
+                run_dir, df, effective_text_col, Xpre_fit,
+                axis_diagnostics=chosen.axis_diagnostics,
+            )
+        else:
+            ica_axis_cards = []
+            export_ica_axis_unavailable_report(
+                run_dir, str(fit["bundle"].transform_mode), chosen.degraded_reason,
+            )
         analysis_info = compute_run_quality(
             Xfinal=fit["Xfinal"],
             labels=fit["labels"],
@@ -3671,6 +4238,15 @@ def main() -> None:
             base_threshold=base_threshold,
             base_dists=fit["dists"],
         )
+        analysis_info["selection_tier"] = chosen.selection_tier
+        analysis_info["degraded_reason"] = chosen.degraded_reason
+        if not strict_commit:
+            analysis_info["quality_gate_status"] = "fail"
+            analysis_info["baseline_review_suggested"] = True
+            analysis_info["quality_summary"] = (
+                f"degraded候補: {chosen.degraded_reason or chosen.transform_mode} / "
+                f"{analysis_info.get('quality_summary', '')}"
+            ).rstrip(" / ")
         # Persist the committed baseline before producing reports so used_version is real.
         # This path is used by both first-run auto commit and --use-plan manual commit.
         meta = enrich_baseline_meta(meta, fit["bundle"], analysis_info)
@@ -3685,7 +4261,10 @@ def main() -> None:
             "used_version": ver,
             "chosen_plan": asdict(chosen),
             "base_threshold": base_threshold,
-            "ica1_base_threshold": float(ica1_state["ica1_base_threshold"]),
+            "ica1_base_threshold": (
+                float(ica1_state["ica1_base_threshold"])
+                if ica1_state["ica1_base_threshold"] is not None else None
+            ),
             "candidate_metric_space": "pca_l2_eval_space",
             "projected_space_metrics": "diagnostic_only",
             "protected_cluster_count": int(centroids.shape[0]),
@@ -3705,6 +4284,7 @@ def main() -> None:
             int(centroids.shape[0]),
             meta.mode,
             analysis_info=analysis_info,
+            ica_axis_cards=ica_axis_cards,
         )
         emit_run_summary(meta.mode, analysis_info)
         log.info("baseline 作成/更新: %s", history_root(result_root, project) / ver)
@@ -3810,7 +4390,7 @@ def main() -> None:
             "accepted_existing_extra": unlock_res["accepted_extra_mask"],
             "unlock_added": unlock_res["added_mask"],
         }
-        export_run_csv(run_dir, df, keep_cols, Xfinal, unlock_res["labels"], unlock_res["dists"], args.max_ic_cols, extra_cols=extra_cols)
+        export_run_csv(run_dir, df, keep_cols, Xfinal, unlock_res["labels"], unlock_res["dists"], args.max_ic_cols, extra_cols=extra_cols, Xica1=(Xpre if int(bundle.ica1_n_components) > 0 else None), include_ica1_cols=args.include_ica1_cols, coordinate_prefix=final_coordinate_prefix(str(bundle.transform_mode)))
         export_report(run_dir, {
             "n": n,
             "project": project,
@@ -3864,7 +4444,7 @@ def main() -> None:
         "gate_ica1": lock_res["gate_ica1_mask"],
         "accepted_existing_extra": lock_res["accepted_extra_mask"],
     }
-    export_run_csv(run_dir, df, keep_cols, Xfinal, lock_res["labels"], lock_res["dists"], args.max_ic_cols, extra_cols=extra_cols)
+    export_run_csv(run_dir, df, keep_cols, Xfinal, lock_res["labels"], lock_res["dists"], args.max_ic_cols, extra_cols=extra_cols, Xica1=(Xpre if int(bundle.ica1_n_components) > 0 else None), include_ica1_cols=args.include_ica1_cols, coordinate_prefix=final_coordinate_prefix(str(bundle.transform_mode)))
     analysis_info = compute_run_quality(
         Xfinal=Xfinal,
         labels=lock_res["labels"],
