@@ -33,7 +33,7 @@ class Pvm620Tests(unittest.TestCase):
         release_text = (root / "docs" / "releases" / "RELEASE_v6.2.3.md").read_text(encoding="utf-8")
 
         self.assertEqual(PVM.__version__, "6.2.3")
-        self.assertEqual(PVM.SCRIPT_VERSION, "PVM-standard-6.2.3")
+        self.assertEqual(PVM.SCRIPT_VERSION, f"PVM-standard-{PVM.__version__}")
         self.assertIn("PVM License v1.3", license_text)
         self.assertIn("利用者が個人であること", license_text)
         self.assertIn("再配布等の禁止", license_text)

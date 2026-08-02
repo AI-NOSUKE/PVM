@@ -1,75 +1,64 @@
-# PVM Evaluation Protocol
+# PVM 評価手順
 
-## Purpose
+[トップ](../README.md) · [操作マニュアル](../Manual.md) · [資料一覧](./README.md)
 
-This document describes how to evaluate PVM Standard 6.x (current release: 6.2.3) without overstating what internal clustering metrics can prove.
+## 目的
 
-PVM is not a ground-truth label reproducer. It is a practical pipeline for visualizing the semantic structure of free-text responses and then operating that structure as a locked baseline across future datasets.
+PVMの評価では、内部クラスタ指標だけで性能を判断しません。PVMは正解ラベルの再現器ではなく、自由記述の意味構造を整理し、解釈したクラスタ体系をbaselineとして再利用するためのパイプラインです。
 
-## Evaluation Caveat
+## 指標の扱い
 
-PVM Standard 6.1.0 keeps the 6.0.0 pipeline, but candidate-selection metrics are computed in one common evaluation space: `X_eval = l2_normalize(pca_base["Xp"])`. Candidate fields such as `silhouette_eval_space`, `ch_eval_space`, and `db_eval_space` refer to this shared space.
+候補選定の silhouette、Calinski-Harabasz、Davies-Bouldin は、全候補共通の PCA L2 評価空間 `X_eval = l2_normalize(pca_base["Xp"])` で計算します。`silhouette_eval_space`、`ch_eval_space`、`db_eval_space` はこの共通空間の指標です。
 
-Metrics computed after Centroid Projection, such as `silhouette_projected_space`, `ch_projected_space`, and `db_projected_space`, are diagnostic and interpretation aids. They are not used as standalone candidate-quality proof, because Centroid Projection is learned from Cluster① centroids.
+Centroid Projection後の `silhouette_projected_space`、`ch_projected_space`、`db_projected_space` は診断・解釈補助用です。Centroid ProjectionはCluster①の重心から学習されるため、これらを候補品質や外部妥当性の単独証拠にはしません。
 
-External validity should be assessed with stability checks, holdout lock behavior, and semantic coherence review. If a dataset has reliable ground-truth labels, label-based metrics can be added, but they should not be treated as the only target because PVM is designed for exploratory and operational structure building.
+## 評価軸
 
-## Evaluation Axes
+- **seed安定性**：乱数seedを変え、割当、代表文、クラスタ解釈が大きく崩れないか確認する。
+- **再標本安定性**：bootstrapまたは固定比率のsubsampleで再実行し、同様の意味グループが再現するか確認する。
+- **holdout lock**：trainでbaselineを作成し、holdoutを再学習せずlock適用して割当の解釈可能性を確認する。
+- **意味的一貫性**：人手またはLLM補助で、代表文、境界例、クラスタ名の一貫性を確認する。
+- **ARI / NMI**：信頼できる正解ラベルがある場合のみ、追加証拠として使う。
 
-Use the following axes when comparing PVM with other methods.
+## 比較対象
 
-- **Seed stability**: Run the same method with multiple random seeds and check whether cluster assignments, representative examples, and cluster-level interpretations remain stable.
-- **Resampling stability**: Re-run the method on bootstrap or subsampled data and inspect whether similar semantic groups reappear.
-- **Holdout baseline lock**: Build a baseline on training data, apply lock to holdout data, and check whether assignments remain interpretable without retraining.
-- **Semantic coherence**: Review representative examples, boundary cases, and cluster names by human inspection or LLM-assisted review.
-- **ARI / NMI when labels exist**: If trustworthy labels are available, report ARI and NMI as additional evidence. Do not use them when labels are absent or only weakly defined.
-
-## Comparison Targets
-
-At minimum, compare the following methods under the same input data, embedding model, preprocessing, and candidate `k` range where applicable.
+入力データ、embeddingモデル、前処理、比較可能な範囲の `k` を揃え、少なくとも次を比較します。
 
 - embedding + spherical k-means
 - PCA → ICA① + spherical k-means
-- the current PVM Standard 6.x release
-- BERTopic or other topic-modeling methods when relevant
+- PVMの完全パイプライン
+- 必要に応じてBERTopic等の他手法
 
-This protocol does not claim that PVM will always outperform these methods. It defines a fair comparison plan.
+## 手順
 
-## Suggested Procedure
+1. データ出典、フィルタ条件、件数、言語を記録する。
+2. embeddingモデルとembedding prefixを固定する。
+3. 各手法を可能な範囲で同じ `k` 候補で実行する。
+4. 複数seedで繰り返す。
+5. bootstrapまたはsubsampleで再標本評価する。
+6. trainでbaselineを作成し、holdoutへlock適用する。
+7. 代表文、境界例、クラスタ名を読む。
+8. 内部指標と定性所見を分けず併記する。
 
-1. Prepare a dataset and document the text source, filtering rules, sample size, and language.
-2. Fix the embedding model and embedding prefix.
-3. Run each comparison method with the same candidate `k` range when possible.
-4. Repeat each method across multiple random seeds.
-5. Run resampling checks with bootstrap or fixed-rate subsampling.
-6. Build a baseline on a training split and apply lock to holdout data when the method supports it.
-7. Review representative examples, boundary examples, and cluster naming consistency.
-8. Report internal metrics and qualitative findings together.
+## 報告項目
 
-## Reporting Format
-
-Use a table with at least the following fields.
-
-| field | description |
+| 項目 | 内容 |
 |---|---|
-| dataset | Dataset name or source |
-| sample size | Number of texts used |
-| embedding model | Embedding model and prefix |
-| method | Compared method |
-| k | Number of clusters |
-| silhouette_eval_space | Cosine silhouette in the common PCA L2 evaluation space |
-| ch_eval_space | Calinski-Harabasz diagnostic in the common PCA L2 evaluation space |
-| db_eval_space | Davies-Bouldin diagnostic in the common PCA L2 evaluation space |
-| entropy balance | Cluster size balance metric |
-| silhouette_projected_space | Diagnostic only; do not treat as external validity proof |
-| stability | Seed or resampling stability summary |
-| holdout lock consistency | Whether holdout assignments remain interpretable under locked baseline |
-| qualitative coherence note | Human or LLM-assisted notes about representative examples and cluster naming |
+| dataset | データ名または出典 |
+| sample size | テキスト件数 |
+| embedding | モデルとprefix |
+| method | 比較手法 |
+| k | クラスタ数 |
+| eval-space metrics | `silhouette_eval_space` / `ch_eval_space` / `db_eval_space` |
+| projected-space metrics | 診断用指標 |
+| balance | クラスタ件数のバランス |
+| stability | seedまたは再標本安定性 |
+| holdout lock | holdout割当の整合性と解釈 |
+| qualitative review | 代表文とクラスタ命名の所見 |
 
-## Interpretation Guidelines
+## 解釈原則
 
-- Treat `*_eval_space` internal metrics as screening signals, not final proof. Treat `*_projected_space` metrics as diagnostics only.
-- Prefer methods whose clusters remain stable and interpretable under seed changes and resampling.
-- Treat holdout lock behavior as important for operational use because PVM is designed for fixed baseline workflows.
-- Clearly separate measured benchmark results from hypotheses or future evaluation plans.
-- Do not claim PVM superiority without running the comparison and reporting the evidence.
+- 内部指標は候補の絞り込みと診断に使い、単独で優位性を主張しない。
+- seedや標本が変わっても、意味と代表文が保たれるかを重視する。
+- baseline lockの運用性は、holdoutまたは別時点データで確認する。
+- 測定済みの結果と、未検証の仮説を分けて報告する。

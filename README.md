@@ -5,10 +5,12 @@
 
 > **License:** 本リポジトリはソースコードを公開していますが、OSSではありません。非商用の個人利用・学術研究・教育・条件内のPoCは無償です。商用利用には事前の有償ライセンス契約が必要で、年額75万円／200万円／400万円のプランがあります。コードおよび改変版の再配布は禁止しています。詳細は[LICENSE](./LICENSE)を確認してください。
 
+**ドキュメント:** [クイックスタート](#クイックスタート) · [操作マニュアル](./Manual.md) · [評価手順](./docs/evaluation_protocol.md) · [利用条件FAQ](./docs/USAGE_FAQ.md) · [資料一覧](./docs/README.md)
+
 ## 🔰 概要（PVMとは）
 
-**PVM（Phantom Vector Mapping）**は、embedding 後のテキストを PCA、ICA①、クラスタ重心にもとづく centroid projection で意味空間に再構成し、spherical k-means で安定して解釈しやすいクラスタを得る手法です。
-テキストをベクトル化（embedding）した上で、意味的な独立軸とクラスタ間方向を抽出し、cosine 距離に基づく安定的なクラスタ構造を導きます。
+**PVM（Phantom Vector Mapping）**は、embedding 後のテキストを PCA、ICA①、クラスタ重心にもとづく centroid projection で整理し、spherical k-means でクラスタ化する手法です。
+テキストをベクトル化（embedding）した上で、意味的な独立軸とクラスタ間方向を抽出し、cosine 距離に基づくクラスタ構造を構築します。
 
 主な構成は以下の通りです：
 
@@ -50,10 +52,6 @@ PVM Standard の要点:
 - 候補選定の主指標は全候補共通の PCA L2 評価空間で計算し、射影後空間の指標は診断用に分離します。
 - 初回はbaselineを作成し、2回目以降は同名projectのbaselineをlock適用します。別名baselineの利用は `--baseline-from NAME` で明示します。
 - 評価では内部指標だけに依存せず、安定性、holdoutへのlock適用、クラスタ解釈の一貫性を確認します。
-
-👉 サンプルレポート（PVMによるWebテキスト分類と、クラスタロックを用いた比較分析の実例）  
-- ももクロ関連コメント分析: [docs/momoclo_report.md](docs/momoclo_report.md)  
-- メンバー別比較分析（クラスタロック活用）: [docs/momoclo_memberBreakDownreport.md](docs/momoclo_memberBreakDownreport.md)
 
 ## ⚙️ この実装（ローカル動作＆日本語特化）
 
@@ -304,7 +302,7 @@ PVMの評価では、内部指標だけでなく、次の観点を併用しま�
 
 PVMは「正解ラベル再現器」ではありません。自由回答の意味構造を可視化し、一度解釈したクラスタ体系をbaselineとして固定運用するための実務向けパイプラインです。
 
-具体的な評価手順は [docs/evaluation_protocol.md](docs/evaluation_protocol.md) にまとめています。このプロトコルは今後の検証手順であり、現時点でPVMが他手法より優位であることを断言するものではありません。
+具体的な評価手順は [docs/evaluation_protocol.md](docs/evaluation_protocol.md) にまとめています。この手順は、PVMが他手法より優位であることを予め主張するものではありません。
 
 ---
 

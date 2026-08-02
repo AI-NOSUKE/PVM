@@ -1,5 +1,7 @@
 # PVM License FAQ
 
+[トップ](../README.md) · [操作マニュアル](../Manual.md) · [資料一覧](./README.md) · [LICENSE](../LICENSE)
+
 このFAQはPVM License v1.3の利用区分を分かりやすく説明するものです。FAQとLICENSEの内容が
 異なる場合は、[LICENSE](../LICENSE)が優先します。
 
