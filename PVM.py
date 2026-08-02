@@ -33,7 +33,7 @@ Current defaults
 
 from __future__ import annotations
 
-__version__ = "6.2.3"
+__version__ = "6.2.4"
 
 import argparse
 import json

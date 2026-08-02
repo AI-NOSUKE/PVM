@@ -54,9 +54,9 @@ class Pvm620Tests(unittest.TestCase):
         license_text = (root / "LICENSE").read_text(encoding="utf-8")
         faq_text = (root / "docs" / "USAGE_FAQ.md").read_text(encoding="utf-8")
         readme_text = (root / "README.md").read_text(encoding="utf-8")
-        release_text = (root / "docs" / "releases" / "RELEASE_v6.2.3.md").read_text(encoding="utf-8")
+        release_text = (root / "docs" / "releases" / "RELEASE_v6.2.4.md").read_text(encoding="utf-8")
 
-        self.assertEqual(PVM.__version__, "6.2.3")
+        self.assertEqual(PVM.__version__, "6.2.4")
         self.assertEqual(PVM.SCRIPT_VERSION, f"PVM-standard-{PVM.__version__}")
         self.assertIn("PVM License v1.3", license_text)
         self.assertIn("利用者が個人であること", license_text)
@@ -71,7 +71,7 @@ class Pvm620Tests(unittest.TestCase):
         self.assertIn("年額の標準プラン", faq_text)
         self.assertIn("PVM License v1.3", faq_text)
         self.assertIn("PVM License v1.3", readme_text)
-        self.assertIn("PVM Standard 6.2.3", release_text)
+        self.assertIn("PVM Standard 6.2.4", release_text)
 
     def test_baseline_auto_selection_uses_matching_project_name_only(self):
         with tempfile.TemporaryDirectory() as td:

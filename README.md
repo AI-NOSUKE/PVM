@@ -35,7 +35,7 @@ PVMは、日本語の自由記述テキストを意味軸とクラスタ構造�
 
 ## PVM Standard
 
-現行版は **PVM Standard 6.2.3**、baseline schemaは **2.1** です。標準パイプラインは以下の通りです。
+現行版は **PVM Standard 6.2.4**、baseline schemaは **2.1** です。標準パイプラインは以下の通りです。
 
 ```text
 Embedding
