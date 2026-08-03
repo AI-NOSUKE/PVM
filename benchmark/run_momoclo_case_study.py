@@ -33,8 +33,11 @@ import PVM  # noqa: E402
 
 
 PCA_VAR = 0.90
+PCA_CONTROL_DIM = 6
 ABLATION_SEEDS = (42, 52, 62, 72, 82)
 LOCK_SPLIT_SEEDS = tuple(range(2024, 2034))
+LOCK_VARIANTS = ("pvm", "raw_kmeans", "pca_kmeans", "pca6_kmeans")
+REFERENCE_MODES = ("shared", "self")
 VARIANTS = (
     ("V1", "embedding + spherical k-means"),
     ("V2", "PCA + spherical k-means"),
@@ -288,77 +291,277 @@ def run_lock_resampling(
     data_kind: str,
     k: int,
     ica_dim: int,
+    search_cache: dict[Any, Any],
 ) -> list[dict[str, Any]]:
     retry = exact_retry_config()
-    _, Xfull, _ = PVM.fit_transforms(X, PCA_VAR, ica_dim, k, 42, {}, retry)
-    reference = PVM.spherical_kmeans(Xfull, k, 42)["labels"]
+    references: dict[str, np.ndarray] = {}
+    reference_errors: dict[str, str] = {}
+
+    try:
+        _, Xfull, _ = PVM.fit_transforms(X, PCA_VAR, ica_dim, k, 42, {}, retry)
+        references["pvm"] = np.asarray(
+            PVM.spherical_kmeans(Xfull, k, 42)["labels"], dtype=int,
+        )
+    except Exception as exc:
+        reference_errors["pvm"] = f"{type(exc).__name__}: {exc}"
+
+    try:
+        references["raw_kmeans"] = np.asarray(
+            PVM.spherical_kmeans(X, k, 42)["labels"], dtype=int,
+        )
+    except Exception as exc:
+        reference_errors["raw_kmeans"] = f"{type(exc).__name__}: {exc}"
+
+    try:
+        Xp_full = PVM.get_pca_base(X, PCA_VAR, 42, search_cache)["Xp"]
+        references["pca_kmeans"] = np.asarray(
+            PVM.spherical_kmeans(Xp_full, k, 42)["labels"], dtype=int,
+        )
+        references["pca6_kmeans"] = np.asarray(
+            PVM.spherical_kmeans(Xp_full[:, :PCA_CONTROL_DIM], k, 42)["labels"],
+            dtype=int,
+        )
+    except Exception as exc:
+        reference_errors["pca_kmeans"] = f"{type(exc).__name__}: {exc}"
+        reference_errors["pca6_kmeans"] = f"{type(exc).__name__}: {exc}"
+
     rows: list[dict[str, Any]] = []
 
     for split_seed in LOCK_SPLIT_SEEDS:
-        row = {
-            "experiment": "lock_resampling",
-            "data_kind": data_kind,
-            "split_seed": split_seed,
-            "status": "ok",
-            "holdout_n": None,
-            "holdout_lock_ari": None,
-            "error": "",
-        }
-        try:
-            rng = np.random.default_rng(split_seed)
-            order = rng.permutation(len(X))
-            holdout_n = int(round(0.30 * len(X)))
-            holdout_idx, train_idx = order[:holdout_n], order[holdout_n:]
-            row["holdout_n"] = holdout_n
+        rng = np.random.default_rng(split_seed)
+        order = rng.permutation(len(X))
+        holdout_n = int(round(0.30 * len(X)))
+        holdout_idx, train_idx = order[:holdout_n], order[holdout_n:]
 
-            bundle, Xtrain_final, _ = PVM.fit_transforms(
-                X[train_idx], PCA_VAR, ica_dim, k, 42, {}, retry,
-            )
-            train_cluster = PVM.spherical_kmeans(Xtrain_final, k, 42)
-            base_threshold = float(np.quantile(train_cluster["dists"], 0.95))
+        assignments: dict[str, np.ndarray] = {}
+        assignment_errors: dict[str, str] = {}
+        train_balances: dict[str, float] = {}
+        for lock_variant in LOCK_VARIANTS:
+            try:
+                if lock_variant == "pvm":
+                    bundle, Xtrain_final, _ = PVM.fit_transforms(
+                        X[train_idx], PCA_VAR, ica_dim, k, 42, {}, retry,
+                    )
+                    train_cluster = PVM.spherical_kmeans(Xtrain_final, k, 42)
+                    base_threshold = float(
+                        np.quantile(train_cluster["dists"], 0.95)
+                    )
+                    Xtrain_pre = PVM.apply_pre_projection_space(
+                        X[train_idx], bundle,
+                    )
+                    pre_gate = PVM.compute_pre_projection_gate_state(
+                        Xtrain_pre, train_cluster["labels"], k, 0.95,
+                    )
+                    locked = PVM.gated_lock_assign(
+                        Xfinal=PVM.apply_transforms(X[holdout_idx], bundle),
+                        centroids=train_cluster["centroids"],
+                        protected_cluster_count=k,
+                        base_threshold=base_threshold,
+                        extra_accept_thresholds=[],
+                        extra_relative_advantage=PVM.DEFAULT_EXTRA_REL_ADV,
+                        Xpre=PVM.apply_pre_projection_space(X[holdout_idx], bundle),
+                        ica1_centroids=pre_gate["ica1_centroids"],
+                        ica1_base_threshold=pre_gate["ica1_base_threshold"],
+                    )
+                    assignments[lock_variant] = np.asarray(
+                        locked["labels"], dtype=int,
+                    )
+                    train_balances[lock_variant] = float(
+                        PVM.entropy_balance(train_cluster["labels"], k)
+                    )
+                elif lock_variant == "raw_kmeans":
+                    train_cluster = PVM.spherical_kmeans(X[train_idx], k, 42)
+                    distances = PVM.cosine_distance_to_centroids(
+                        PVM.l2_normalize(X[holdout_idx]),
+                        PVM.l2_normalize(train_cluster["centroids"]),
+                    )
+                    assignments[lock_variant] = np.argmin(distances, axis=1)
+                    train_balances[lock_variant] = float(
+                        PVM.entropy_balance(train_cluster["labels"], k)
+                    )
+                elif lock_variant in {"pca_kmeans", "pca6_kmeans"}:
+                    pca_base = PVM.get_pca_base(
+                        X[train_idx], PCA_VAR, 42, {},
+                    )
+                    pca_dim = (
+                        int(pca_base["n_pcs"])
+                        if lock_variant == "pca_kmeans"
+                        else PCA_CONTROL_DIM
+                    )
+                    Xtrain_pca = pca_base["Xp"][:, :pca_dim]
+                    train_cluster = PVM.spherical_kmeans(
+                        Xtrain_pca, k, 42,
+                    )
+                    base = {
+                        **pca_base["pca_bundle_base"],
+                        "pca_n_components": pca_dim,
+                    }
+                    pca_bundle = PVM.TransformBundle(
+                        **base,
+                        ica1_components=np.empty((0, 0), dtype=np.float32),
+                        ica1_mean=np.empty(0, dtype=np.float32),
+                        ica1_n_components=0,
+                        ica2_components=np.empty((0, 0), dtype=np.float32),
+                        ica2_mean=np.empty(0, dtype=np.float32),
+                        ica2_n_components=0,
+                        transform_mode="pca_pvm",
+                        ica1_status="skipped",
+                        ica2_status="skipped",
+                        final_n_components=pca_dim,
+                        fallback_level=2,
+                    )
+                    Xholdout_pca = PVM.apply_transforms(
+                        X[holdout_idx], pca_bundle,
+                    )
+                    distances = PVM.cosine_distance_to_centroids(
+                        PVM.l2_normalize(Xholdout_pca),
+                        PVM.l2_normalize(train_cluster["centroids"]),
+                    )
+                    assignments[lock_variant] = np.argmin(distances, axis=1)
+                    train_balances[lock_variant] = float(
+                        PVM.entropy_balance(train_cluster["labels"], k)
+                    )
+                else:  # pragma: no cover
+                    raise ValueError(lock_variant)
+            except Exception as exc:
+                assignment_errors[lock_variant] = f"{type(exc).__name__}: {exc}"
 
-            Xtrain_pre = PVM.apply_pre_projection_space(X[train_idx], bundle)
-            pre_gate = PVM.compute_pre_projection_gate_state(
-                Xtrain_pre, train_cluster["labels"], k, 0.95,
-            )
-            locked = PVM.gated_lock_assign(
-                Xfinal=PVM.apply_transforms(X[holdout_idx], bundle),
-                centroids=train_cluster["centroids"],
-                protected_cluster_count=k,
-                base_threshold=base_threshold,
-                extra_accept_thresholds=[],
-                extra_relative_advantage=PVM.DEFAULT_EXTRA_REL_ADV,
-                Xpre=PVM.apply_pre_projection_space(X[holdout_idx], bundle),
-                ica1_centroids=pre_gate["ica1_centroids"],
-                ica1_base_threshold=pre_gate["ica1_base_threshold"],
-            )
-            row["holdout_lock_ari"] = float(
-                adjusted_rand_score(locked["labels"], np.asarray(reference)[holdout_idx])
-            )
-        except Exception as exc:
-            row["status"] = "error"
-            row["error"] = f"{type(exc).__name__}: {exc}"
-        rows.append(row)
+        for lock_variant in LOCK_VARIANTS:
+            for reference_mode in REFERENCE_MODES:
+                row = {
+                    "experiment": "lock_resampling",
+                    "data_kind": data_kind,
+                    "lock_variant": lock_variant,
+                    "reference_mode": reference_mode,
+                    "split_seed": split_seed,
+                    "status": "ok",
+                    "holdout_n": holdout_n,
+                    "holdout_lock_ari": None,
+                    "train_entropy_balance": None,
+                    "holdout_entropy_balance": None,
+                    "reference_entropy_balance": None,
+                    "error": "",
+                }
+                reference_variant = (
+                    "pvm" if reference_mode == "shared" else lock_variant
+                )
+                error = assignment_errors.get(lock_variant)
+                if error is None:
+                    error = reference_errors.get(reference_variant)
+                if error is not None:
+                    row["status"] = "error"
+                    row["error"] = error
+                else:
+                    reference_labels = references[reference_variant][holdout_idx]
+                    row["holdout_lock_ari"] = float(
+                        adjusted_rand_score(
+                            assignments[lock_variant],
+                            reference_labels,
+                        )
+                    )
+                    row["train_entropy_balance"] = train_balances[lock_variant]
+                    row["holdout_entropy_balance"] = float(
+                        PVM.entropy_balance(assignments[lock_variant], k)
+                    )
+                    row["reference_entropy_balance"] = float(
+                        PVM.entropy_balance(reference_labels, k)
+                    )
+                rows.append(row)
     return rows
 
 
 def summarize_lock(rows: list[dict[str, Any]]) -> dict[str, Any]:
-    values = [
-        float(row["holdout_lock_ari"])
-        for row in rows
+    ok = [
+        row for row in rows
         if row["status"] == "ok" and row["holdout_lock_ari"] is not None
     ]
+    values = [float(row["holdout_lock_ari"]) for row in ok]
     if not values:
-        return {"successful_splits": 0}
+        return {"count": 0, "mean": None, "median": None, "min": None, "max": None}
+    balance_means = {
+        f"mean_{field}": float(np.mean([
+            float(row[field]) for row in ok if row[field] is not None
+        ]))
+        for field in (
+            "train_entropy_balance",
+            "holdout_entropy_balance",
+            "reference_entropy_balance",
+        )
+    }
     return {
-        "successful_splits": len(values),
+        "count": len(values),
         "mean": float(np.mean(values)),
         "median": float(np.median(values)),
-        "minimum": float(np.min(values)),
-        "maximum": float(np.max(values)),
+        "min": float(np.min(values)),
+        "max": float(np.max(values)),
         "below_0_5": int(np.sum(np.asarray(values) < 0.5)),
         "values": values,
+        **balance_means,
     }
+
+
+def summarize_lock_matrix(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        lock_variant: {
+            reference_mode: summarize_lock([
+                row for row in rows
+                if row["lock_variant"] == lock_variant
+                and row["reference_mode"] == reference_mode
+            ])
+            for reference_mode in REFERENCE_MODES
+        }
+        for lock_variant in LOCK_VARIANTS
+    }
+
+
+def verify_published_pvm_shared(
+    real_rows: list[dict[str, Any]],
+    shuffled_rows: list[dict[str, Any]],
+) -> None:
+    real = summarize_lock_matrix(real_rows)["pvm"]["shared"]
+    shuffled = summarize_lock_matrix(shuffled_rows)["pvm"]["shared"]
+    expected = {
+        "real.mean": (real["mean"], 0.8093986352497693),
+        "real.median": (real["median"], 0.9083813332885031),
+        "real.min": (real["min"], 0.4966620892619629),
+        "real.max": (real["max"], 0.9435023403809935),
+        "shuffled.mean": (shuffled["mean"], 0.05626401223711926),
+    }
+    mismatches = [
+        f"{name}: got={actual!r}, expected={wanted!r}"
+        for name, (actual, wanted) in expected.items()
+        if actual is None or not np.isclose(actual, wanted, rtol=0.0, atol=1e-9)
+    ]
+    if mismatches:
+        raise RuntimeError(
+            "published PVM/shared lock results changed; aborting: "
+            + "; ".join(mismatches)
+        )
+
+
+def print_real_lock_means(rows: list[dict[str, Any]]) -> None:
+    summary = summarize_lock_matrix(rows)
+    print("[lock] real holdout ARI means (self is the primary comparison)")
+    for lock_variant in LOCK_VARIANTS:
+        for reference_mode in REFERENCE_MODES:
+            value = summary[lock_variant][reference_mode]["mean"]
+            rendered = "n/a" if value is None else f"{value:.4f}"
+            print(f"  {lock_variant:12s} {reference_mode:6s} {rendered}")
+    print("[lock] real mean entropy balance (train / holdout assignment / self reference)")
+    for lock_variant in LOCK_VARIANTS:
+        values = summary[lock_variant]["self"]
+        rendered = [
+            "n/a" if values.get(key) is None else f"{values[key]:.4f}"
+            for key in (
+                "mean_train_entropy_balance",
+                "mean_holdout_entropy_balance",
+                "mean_reference_entropy_balance",
+            )
+        ]
+        print(
+            f"  {lock_variant:12s} "
+            + " / ".join(rendered)
+        )
 
 
 def assignment_margins(cluster: dict[str, Any]) -> np.ndarray:
@@ -556,14 +759,21 @@ def main() -> None:
 
     real_rows, real_summary, seed42 = run_ablation(X, "real", k, ica_dim)
     shuffled_rows, shuffled_summary, _ = run_ablation(Xshuffled, "shuffled", k, ica_dim)
-    real_lock = run_lock_resampling(X, "real", k, ica_dim)
-    shuffled_lock = run_lock_resampling(Xshuffled, "shuffled", k, ica_dim)
+    real_lock = run_lock_resampling(
+        X, "real", k, ica_dim, search_cache,
+    )
+    shuffled_search_cache: dict[Any, Any] = {}
+    shuffled_lock = run_lock_resampling(
+        Xshuffled, "shuffled", k, ica_dim, shuffled_search_cache,
+    )
+    verify_published_pvm_shared(real_lock, shuffled_lock)
+    print_real_lock_means(real_lock)
     manifest = qualitative_output(frame, seed42, best, k, args.output_dir)
 
     all_rows = real_rows + shuffled_rows + real_lock + shuffled_lock
     write_csv(args.output_dir / "runs.csv", all_rows)
     metadata = {
-        "script_version": "momoclo-case-study-1",
+        "script_version": "momoclo-case-study-2",
         "pvm_version": PVM.SCRIPT_VERSION,
         "pvm_git_commit": git_commit(),
         "input_file_sha256": file_sha256(args.input_csv),
@@ -580,6 +790,7 @@ def main() -> None:
         "device_or_source": device,
         "embedding_seconds": embedding_seconds,
         "pca_var": PCA_VAR,
+        "pca_control_dim": PCA_CONTROL_DIM,
         "pca_n_components": int(
             PVM.get_pca_base(X, PCA_VAR, 42, search_cache)["n_pcs"]
         ),
@@ -599,9 +810,16 @@ def main() -> None:
             "shuffled": shuffled_summary,
         },
         "lock_resampling": {
-            "real": summarize_lock(real_lock),
-            "shuffled": summarize_lock(shuffled_lock),
+            "real": summarize_lock_matrix(real_lock),
+            "shuffled": summarize_lock_matrix(shuffled_lock),
         },
+        "lock_resampling_interpretation_note": (
+            "PVM uses gated_lock_assign; raw_kmeans, pca_kmeans, and pca6_kmeans "
+            "use ungated nearest-centroid cosine assignment because the gate is "
+            "PVM-specific. pca6_kmeans controls for the six-dimensional PVM result. "
+            "Use self as the primary method comparison and shared as a supplementary "
+            "comparison against the full-data PVM clustering."
+        ),
         "qualitative_manifest_rows": len(manifest),
     }
     (args.output_dir / "metrics.json").write_text(
