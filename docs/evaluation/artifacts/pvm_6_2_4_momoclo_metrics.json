@@ -18,6 +18,7 @@
     "device_or_source": "cache",
     "embedding_seconds": 0.0,
     "pca_var": 0.9,
+    "pca_n_components": 228,
     "k_range": [
       3,
       12

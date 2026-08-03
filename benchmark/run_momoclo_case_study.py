@@ -580,6 +580,9 @@ def main() -> None:
         "device_or_source": device,
         "embedding_seconds": embedding_seconds,
         "pca_var": PCA_VAR,
+        "pca_n_components": int(
+            PVM.get_pca_base(X, PCA_VAR, 42, search_cache)["n_pcs"]
+        ),
         "k_range": [args.k_min, args.k_max],
         "search_budget": args.search_budget,
         "search_seconds": search_seconds,
