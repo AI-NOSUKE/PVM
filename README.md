@@ -7,7 +7,7 @@ PVMは、日本語の自由記述テキストを意味軸とクラスタ構造�
 
 > **License:** source-available（非OSS）です。非商用の個人利用・学術研究・教育・条件内のPoCは無償、商用利用には有償ライセンスが必要です。詳細は [LICENSE](./LICENSE) と [利用条件FAQ](./docs/USAGE_FAQ.md) を確認してください。
 
-**ドキュメント:** [クイックスタート](#クイックスタート) · [操作マニュアル](./Manual.md) · [評価手順](./docs/evaluation_protocol.md) · [利用条件FAQ](./docs/USAGE_FAQ.md) · [資料一覧](./docs/README.md)
+**ドキュメント:** [クイックスタート](#クイックスタート) · [操作マニュアル](./Manual.md) · [評価手順](./docs/evaluation_protocol.md) · [実テキスト評価例](./docs/evaluation/pvm_6_2_4_momoclo_case_study.md) · [利用条件FAQ](./docs/USAGE_FAQ.md) · [資料一覧](./docs/README.md)
 
 ## 🔰 概要（PVMとは）
 
@@ -320,7 +320,7 @@ PVMの有効性は、同じ入力データと同じembedding条件のもとで�
 
 比較では、内部指標の順位だけでなく、seed変更時の安定性、holdoutへのlock適用、クラスタ名の付けやすさ、代表文の読みやすさ、実務上の再利用しやすさを合わせて確認します。
 
-評価プロトコルは [docs/evaluation_protocol.md](docs/evaluation_protocol.md) を参照してください。
+評価プロトコルは [docs/evaluation_protocol.md](docs/evaluation_protocol.md) を参照してください。手順を現行版へ適用した一例として、[PVM Standard 6.2.4 ももクロ実テキスト・ケーススタディ](docs/evaluation/pvm_6_2_4_momoclo_case_study.md) と[再実行スクリプト](benchmark/README.md)を公開しています。この一例だけで他データへの優位性を主張するものではありません。
 
 ---
 
