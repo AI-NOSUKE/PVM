@@ -1,0 +1,61 @@
+experiment,data_kind,variant,description,seed,status,silhouette_eval,entropy_balance,changed_from_v3_count,changed_from_v3_rate,error,split_seed,holdout_n,holdout_lock_ari
+ablation,real,V1,embedding + spherical k-means,42,ok,0.04817891865968704,0.9923787569489281,,,,,,
+ablation,real,V2,PCA + spherical k-means,42,ok,0.04927314072847366,0.9925107758551333,,,,,,
+ablation,real,V3,PCA + ICA1 + spherical k-means,42,ok,0.048259634524583817,0.9982326555012245,,,,,,
+ablation,real,V4,PVM full (V3 + Centroid Projection),42,ok,0.04830772429704666,0.9984134915227044,38,0.0076,,,,
+ablation,real,V1,embedding + spherical k-means,52,ok,0.0479959174990654,0.9878268237680872,,,,,,
+ablation,real,V2,PCA + spherical k-means,52,ok,0.04765164852142334,0.9934252892564825,,,,,,
+ablation,real,V3,PCA + ICA1 + spherical k-means,52,ok,0.048537835478782654,0.9985982955963457,,,,,,
+ablation,real,V4,PVM full (V3 + Centroid Projection),52,ok,0.04851869121193886,0.9986004576464816,30,0.006,,,,
+ablation,real,V1,embedding + spherical k-means,62,ok,0.047497835010290146,0.9882415132465667,,,,,,
+ablation,real,V2,PCA + spherical k-means,62,ok,0.04776831716299057,0.993531340951342,,,,,,
+ablation,real,V3,PCA + ICA1 + spherical k-means,62,ok,0.04850824922323227,0.998563472744023,,,,,,
+ablation,real,V4,PVM full (V3 + Centroid Projection),62,ok,0.04851274564862251,0.9985709775418323,33,0.0066,,,,
+ablation,real,V1,embedding + spherical k-means,72,ok,0.04959147423505783,0.9869198540472124,,,,,,
+ablation,real,V2,PCA + spherical k-means,72,ok,0.04361956939101219,0.9971302978641499,,,,,,
+ablation,real,V3,PCA + ICA1 + spherical k-means,72,ok,0.04846969619393349,0.9985634166766324,,,,,,
+ablation,real,V4,PVM full (V3 + Centroid Projection),72,ok,0.04858425259590149,0.9985931696221543,25,0.005,,,,
+ablation,real,V1,embedding + spherical k-means,82,ok,0.04629332572221756,0.9952642359657052,,,,,,
+ablation,real,V2,PCA + spherical k-means,82,ok,0.04771629348397255,0.9935455491419473,,,,,,
+ablation,real,V3,PCA + ICA1 + spherical k-means,82,ok,0.048489760607481,0.9985326320236255,,,,,,
+ablation,real,V4,PVM full (V3 + Centroid Projection),82,ok,0.048574380576610565,0.9985895155421188,25,0.005,,,,
+ablation,shuffled,V1,embedding + spherical k-means,42,ok,0.0016245467122644186,0.9953944852093084,,,,,,
+ablation,shuffled,V2,PCA + spherical k-means,42,ok,0.002757010515779257,0.9998032148849945,,,,,,
+ablation,shuffled,V3,PCA + ICA1 + spherical k-means,42,ok,0.0025079012848436832,0.9999255684430713,,,,,,
+ablation,shuffled,V4,PVM full (V3 + Centroid Projection),42,ok,0.0024213502183556557,0.9999318779600234,2022,0.4044,,,,
+ablation,shuffled,V1,embedding + spherical k-means,52,ok,0.0015740026719868183,0.9820538100121002,,,,,,
+ablation,shuffled,V2,PCA + spherical k-means,52,ok,0.0026505934074521065,0.9997692009049378,,,,,,
+ablation,shuffled,V3,PCA + ICA1 + spherical k-means,52,ok,0.0026227899361401796,0.9998850658175163,,,,,,
+ablation,shuffled,V4,PVM full (V3 + Centroid Projection),52,ok,0.002638026839122176,0.9999566013288284,136,0.0272,,,,
+ablation,shuffled,V1,embedding + spherical k-means,62,ok,0.0017195570981130004,0.9980486545232936,,,,,,
+ablation,shuffled,V2,PCA + spherical k-means,62,ok,0.0027294775936752558,0.9999597065820675,,,,,,
+ablation,shuffled,V3,PCA + ICA1 + spherical k-means,62,ok,0.0024946611374616623,0.9999837299298978,,,,,,
+ablation,shuffled,V4,PVM full (V3 + Centroid Projection),62,ok,0.0023510558530688286,0.9998405939721025,2045,0.409,,,,
+ablation,shuffled,V1,embedding + spherical k-means,72,ok,0.0017317116726189852,0.997216945854955,,,,,,
+ablation,shuffled,V2,PCA + spherical k-means,72,ok,0.00276610953733325,0.9998378992945793,,,,,,
+ablation,shuffled,V3,PCA + ICA1 + spherical k-means,72,ok,0.002621374325826764,0.9998762776929743,,,,,,
+ablation,shuffled,V4,PVM full (V3 + Centroid Projection),72,ok,0.0026164627633988857,0.9999182316893569,47,0.0094,,,,
+ablation,shuffled,V1,embedding + spherical k-means,82,ok,0.0015686097322031856,0.9933954492180488,,,,,,
+ablation,shuffled,V2,PCA + spherical k-means,82,ok,0.0027791503816843033,0.9999412280232847,,,,,,
+ablation,shuffled,V3,PCA + ICA1 + spherical k-means,82,ok,0.002536599524319172,0.9998552551582289,,,,,,
+ablation,shuffled,V4,PVM full (V3 + Centroid Projection),82,ok,0.002539781853556633,0.9997163759000198,354,0.0708,,,,
+lock_resampling,real,,,,ok,,,,,,2024,1500,0.4966620892619629
+lock_resampling,real,,,,ok,,,,,,2025,1500,0.9435023403809935
+lock_resampling,real,,,,ok,,,,,,2026,1500,0.9138021097229757
+lock_resampling,real,,,,ok,,,,,,2027,1500,0.9029605568540304
+lock_resampling,real,,,,ok,,,,,,2028,1500,0.5319071391985225
+lock_resampling,real,,,,ok,,,,,,2029,1500,0.9392547772713722
+lock_resampling,real,,,,ok,,,,,,2030,1500,0.9275291028989603
+lock_resampling,real,,,,ok,,,,,,2031,1500,0.6368392360328499
+lock_resampling,real,,,,ok,,,,,,2032,1500,0.865975097779603
+lock_resampling,real,,,,ok,,,,,,2033,1500,0.9355539030964214
+lock_resampling,shuffled,,,,ok,,,,,,2024,1500,0.10196770625109455
+lock_resampling,shuffled,,,,ok,,,,,,2025,1500,0.038799475809720534
+lock_resampling,shuffled,,,,ok,,,,,,2026,1500,0.052867814028522704
+lock_resampling,shuffled,,,,ok,,,,,,2027,1500,0.03689267481189697
+lock_resampling,shuffled,,,,ok,,,,,,2028,1500,0.03664274946471215
+lock_resampling,shuffled,,,,ok,,,,,,2029,1500,0.0547053887132991
+lock_resampling,shuffled,,,,ok,,,,,,2030,1500,0.07279212812708925
+lock_resampling,shuffled,,,,ok,,,,,,2031,1500,0.05559612157010746
+lock_resampling,shuffled,,,,ok,,,,,,2032,1500,0.05271312831122351
+lock_resampling,shuffled,,,,ok,,,,,,2033,1500,0.05966293528352628
