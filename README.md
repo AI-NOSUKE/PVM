@@ -320,7 +320,7 @@ PVMの有効性は、同じ入力データと同じembedding条件のもとで�
 
 比較では、内部指標の順位だけでなく、seed変更時の安定性、holdoutへのlock適用、クラスタ名の付けやすさ、代表文の読みやすさ、実務上の再利用しやすさを合わせて確認します。
 
-評価プロトコルは [docs/evaluation_protocol.md](docs/evaluation_protocol.md) を参照してください。手順を現行版へ適用した一例として、[PVM Standard 6.2.4 実テキスト動作検証](docs/evaluation/pvm_6_2_4_momoclo_case_study.md) と[再実行スクリプト](benchmark/README.md)を公開しています。この一例だけで他データへの優位性を主張するものではありません。
+評価プロトコルは [docs/evaluation_protocol.md](docs/evaluation_protocol.md) を参照してください。手順を現行版へ適用した一例として、[PVM Standard 6.2.4 実テキスト動作検証](docs/evaluation/pvm_6_2_4_momoclo_case_study.md)、[holdoutロック経路比較](docs/evaluation/pvm_6_2_4_momoclo_lock_comparison.md)、[再実行スクリプト](benchmark/README.md)を公開しています。この一例だけで他データへの優位性を主張するものではありません。
 
 ---
 
