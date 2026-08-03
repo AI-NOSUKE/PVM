@@ -2,7 +2,7 @@
 
 [トップ](../README.md) · [操作マニュアル](../Manual.md) · [資料一覧](./README.md)
 
-現行版への適用例は [PVM Standard 6.2.4 ももクロ実テキスト・ケーススタディ](./evaluation/pvm_6_2_4_momoclo_case_study.md) を参照してください。
+現行版への適用例は [PVM Standard 6.2.4 実テキスト動作検証](./evaluation/pvm_6_2_4_momoclo_case_study.md) を参照してください。
 
 ## 目的
 

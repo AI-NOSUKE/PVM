@@ -6,13 +6,13 @@
 
 ## 比較内容
 
-- V1: embedding + spherical k-means
-- V2: PCA + spherical k-means
-- V3: PCA + ICA① + spherical k-means
-- V4: V3 + Centroid Projection（PVM full）
+- 素のクラスタリング（embedding → spherical k-means）
+- PCAのみ（PCA → spherical k-means）
+- PCA＋ICA①（PCA → ICA① → spherical k-means）
+- PVM完全版（PCA → ICA① → Centroid Projection → spherical k-means）
 - realと、embeddingの各列を独立に並べ替えたshuffled対照
 - 5 seedのクラスタ安定性と、10分割のholdout lock整合
-- 固定規則で抽出するV1/V4代表文、ICA①両端文、V3→V4移動文
+- 固定規則で抽出する素のクラスタリング／PVM完全版の代表文、ICA①両端文、Centroid Projectionによる移動文
 
 内部指標は全variant共通のPCA L2空間で計算します。数値だけで優劣を決めず、機械抽出された本文も必ず読みます。
 
@@ -45,4 +45,4 @@ python benchmark/run_momoclo_case_study.py \
 - `qualitative_manifest.csv`: 抽出役割、元ID、本文SHA-256
 - `embeddings.npy`: この実行でembeddingを新規計算した場合のみ
 
-公開済みの一例は [PVM Standard 6.2.4 ももクロ実テキスト・ケーススタディ](../docs/evaluation/pvm_6_2_4_momoclo_case_study.md) にあります。これは一つのラベル無しコーパスでの事例であり、他分野への一般的優位性を証明するものではありません。
+公開済みの一例は [PVM Standard 6.2.4 実テキスト動作検証](../docs/evaluation/pvm_6_2_4_momoclo_case_study.md) にあります。これは一つのラベル無しコーパスでの事例であり、他分野への一般的優位性を証明するものではありません。CSVでは機械処理用の識別子として、上から順に `V1`〜`V4` と記録します。
